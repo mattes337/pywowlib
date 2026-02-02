@@ -4,6 +4,9 @@ World Builder - Headless World Compiler for WoW WotLK 3.3.5a
 Provides a high-level API for programmatically generating WoW map terrain,
 registering custom maps in DBC files, packaging everything into MPQ archives,
 and generating all supporting assets (artwork, scripts, SQL, dungeons, etc.).
+
+Includes an intermediate JSON format for exporting, editing, and importing
+zones and dungeons via ZoneExporter / ZoneImporter.
 """
 
 import os
@@ -26,6 +29,10 @@ from .spell_registry import SpellRegistry
 from .sql_generator import SQLGenerator, import_sql
 from .qa_validator import QAValidator
 from .qa_report import QAReport
+from .intermediate_format import (IDAllocator, create_zone_template,
+                                  create_dungeon_template)
+from .zone_exporter import ZoneExporter, export_zone, export_dungeon
+from .zone_importer import ZoneImporter, import_zone, import_dungeon
 
 
 def build_zone(name, output_dir, coords=None, heightmap=None, texture_paths=None,
