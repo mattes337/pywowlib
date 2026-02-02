@@ -24,7 +24,8 @@ from .dungeon_builder import build_dungeon
 from .dbc_injector import (DBCInjector, register_map, register_area,
                            register_world_map_area, register_world_map_overlay)
 from .mpq_packer import MPQPacker
-from .intermediate_format import load_json, FORMAT_VERSION, IDAllocator, TileImageReader
+from .intermediate_format import (load_json, FORMAT_VERSION, IDAllocator,
+                                  TileImageReader, WMOGltfReader)
 
 log = logging.getLogger(__name__)
 
@@ -671,15 +672,155 @@ class ZoneImporter:
 
     def _import_wmo(self, manifest, id_map):
         """
-        Import WMO dungeon files from the intermediate JSON format.
+        Import WMO dungeon files from the intermediate format.
 
-        Loads root.json and all group_NNN.json files from the wmo/
-        subdirectory, transforms them into the build_dungeon() input
-        format, and generates WMO binary files.
+        Detects format from manifest wmo_sets entries:
+        - 'geometry' key present -> glTF 2.0 (.glb + sidecar .json)
+        - 'root'/'groups' keys present -> legacy JSON (1.0.0)
+        - No wmo_sets -> fall back to single wmo_root path (oldest format)
 
         Args:
             manifest: Parsed manifest.json dict.
             id_map: ID mapping from _allocate_ids().
+
+        Returns:
+            list: Paths to generated WMO files.
+        """
+        wmo_sets = manifest.get('files', {}).get('wmo_sets', [])
+
+        if wmo_sets:
+            all_wmo_files = []
+            for wmo_set in wmo_sets:
+                if 'geometry' in wmo_set:
+                    wmo_files = self._import_wmo_gltf(wmo_set)
+                else:
+                    wmo_files = self._import_wmo_legacy(wmo_set)
+                all_wmo_files.extend(wmo_files)
+            return all_wmo_files
+
+        # Oldest format: single wmo_root reference
+        return self._import_wmo_single_root(manifest)
+
+    def _import_wmo_gltf(self, wmo_set):
+        """
+        Import a single WMO set from glTF 2.0 (.glb + sidecar .json).
+
+        Args:
+            wmo_set: Dict with 'name', 'geometry', 'metadata' keys.
+
+        Returns:
+            list: Paths to generated WMO files.
+        """
+        glb_rel = wmo_set.get('geometry', '')
+        meta_rel = wmo_set.get('metadata', '')
+
+        glb_path = os.path.join(self.export_dir, glb_rel)
+        meta_path = os.path.join(self.export_dir, meta_rel)
+
+        if not os.path.isfile(glb_path):
+            log.warning("WMO glTF file not found: %s", glb_path)
+            return []
+
+        # Read geometry from .glb
+        reader = WMOGltfReader(glb_path)
+        material_extras, glb_rooms = reader.read()
+
+        # Read sidecar metadata
+        sidecar = {}
+        if os.path.isfile(meta_path):
+            sidecar = load_json(meta_path)
+        else:
+            log.warning("WMO sidecar JSON not found: %s", meta_path)
+
+        # Merge sidecar per-group metadata into rooms
+        groups_meta = sidecar.get('groups', [])
+        for room in glb_rooms:
+            room.setdefault('bounds', {})
+            room.setdefault('center', (0, 0, 0))
+            room.setdefault('mogp_flags', 0)
+
+        for gm in groups_meta:
+            idx = gm.get('group_index', -1)
+            if 0 <= idx < len(glb_rooms):
+                glb_rooms[idx]['bounds'] = gm.get('bounds', {})
+                glb_rooms[idx]['center'] = tuple(gm.get('center', (0, 0, 0)))
+                glb_rooms[idx]['mogp_flags'] = gm.get('mogp_flags', 0)
+
+        # Reconstruct full material list from sidecar (authoritative)
+        # rather than glTF material extras (which are informational)
+        root_json = {
+            'name': sidecar.get('name', wmo_set.get('name', 'Dungeon')),
+            'portals': sidecar.get('portals', []),
+            'materials': sidecar.get('materials', []),
+            'lights': sidecar.get('lights', []),
+            'doodads': sidecar.get('doodads', []),
+        }
+
+        # Build group_jsons compatible with _build_wmo
+        group_jsons = []
+        for room in glb_rooms:
+            group_jsons.append({
+                'name': room.get('name', ''),
+                'vertices': room.get('vertices', []),
+                'triangles': room.get('triangles', []),
+                'normals': room.get('normals', []),
+                'uvs': room.get('uvs', []),
+                'face_materials': room.get('face_materials', []),
+                'bounds': room.get('bounds', {}),
+                'center': room.get('center', (0, 0, 0)),
+                'mogp_flags': room.get('mogp_flags', 0),
+            })
+
+        log.info("Loaded WMO '%s' from glTF: %d groups",
+                 root_json['name'], len(group_jsons))
+
+        result = self._build_wmo(root_json, group_jsons)
+        return result.get('wmo_files', [])
+
+    def _import_wmo_legacy(self, wmo_set):
+        """
+        Import a single WMO set from legacy JSON (root.json + group_NNN.json).
+
+        Args:
+            wmo_set: Dict with 'name', 'root', 'groups' keys.
+
+        Returns:
+            list: Paths to generated WMO files.
+        """
+        root_rel = wmo_set.get('root', '')
+        root_path = os.path.join(self.export_dir, root_rel)
+
+        if not os.path.isfile(root_path):
+            log.warning("WMO root file not found: %s", root_path)
+            return []
+
+        root_json = load_json(root_path)
+
+        group_jsons = []
+        for group_file in wmo_set.get('groups', []):
+            group_path = os.path.join(self.export_dir, group_file)
+            if os.path.isfile(group_path):
+                group_jsons.append(load_json(group_path))
+            else:
+                log.warning("WMO group file not found: %s", group_path)
+
+        if not group_jsons:
+            log.warning("No WMO group files loaded for '%s'",
+                        wmo_set.get('name', ''))
+            return []
+
+        log.info("Loaded WMO '%s' from legacy JSON: %d groups",
+                 wmo_set.get('name', ''), len(group_jsons))
+
+        result = self._build_wmo(root_json, group_jsons)
+        return result.get('wmo_files', [])
+
+    def _import_wmo_single_root(self, manifest):
+        """
+        Import WMO from the oldest format (single wmo_root file reference).
+
+        Args:
+            manifest: Parsed manifest.json dict.
 
         Returns:
             list: Paths to generated WMO files.
@@ -694,7 +835,6 @@ class ZoneImporter:
 
         root_json = load_json(root_path)
 
-        # Load all group files
         group_jsons = []
         group_files = root_json.get('groups', [])
         for group_file in group_files:
@@ -708,7 +848,6 @@ class ZoneImporter:
             log.warning("No WMO group files loaded")
             return []
 
-        # Build dungeon using build_dungeon()
         result = self._build_wmo(root_json, group_jsons)
         return result.get('wmo_files', [])
 
@@ -751,6 +890,7 @@ class ZoneImporter:
                 'face_materials': group_json.get('face_materials', []),
                 'bounds': group_json.get('bounds', {}),
                 'center': tuple(group_json.get('center', (0, 0, 0))),
+                'mogp_flags': group_json.get('mogp_flags', 0),
             }
             definition['rooms'].append(room)
 

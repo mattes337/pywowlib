@@ -37,7 +37,8 @@ from .wdt_generator import read_wdt
 from .adt_composer import read_adt
 from .dungeon_builder import read_dungeon
 from .dbc_injector import DBCInjector
-from .intermediate_format import slugify, save_json, FORMAT_VERSION, TileImageWriter
+from .intermediate_format import (slugify, save_json, FORMAT_VERSION,
+                                  TileImageWriter, WMOGltfWriter)
 
 try:
     from ..adt_file import ADTFile
@@ -159,7 +160,7 @@ class ZoneExporter(object):
                 continue
 
             try:
-                tile_data = self._export_adt_tile(adt_filepath)
+                tile_data = self._export_adt_tile(adt_filepath, mphd_flags)
                 tile_rel_path = "tiles/{}_{}".format(x, y)
                 tile_abs_dir = os.path.join(output_dir, tile_rel_path)
                 self._write_tile_images(tile_abs_dir, tile_data)
@@ -262,6 +263,7 @@ class ZoneExporter(object):
             try:
                 wdt_data = read_wdt(wdt_path)
                 active_coords = wdt_data['active_coords']
+                dungeon_mphd_flags = wdt_data['mphd_flags']
 
                 for (x, y) in active_coords:
                     adt_filename = "{}_{:d}_{:d}.adt".format(map_name, x, y)
@@ -274,7 +276,8 @@ class ZoneExporter(object):
                         continue
 
                     try:
-                        tile_data = self._export_adt_tile(adt_filepath)
+                        tile_data = self._export_adt_tile(
+                            adt_filepath, dungeon_mphd_flags)
                         tile_rel_path = "tiles/{}_{}".format(x, y)
                         tile_abs_dir = os.path.join(
                             output_dir, tile_rel_path)
@@ -891,7 +894,7 @@ class ZoneExporter(object):
     # ADT tile export
     # ------------------------------------------------------------------
 
-    def _export_adt_tile(self, adt_filepath):
+    def _export_adt_tile(self, adt_filepath, mphd_flags=0):
         """
         Export a single ADT tile to a JSON-serializable dict.
 
@@ -901,18 +904,23 @@ class ZoneExporter(object):
 
         Args:
             adt_filepath: Path to the ADT binary file.
+            mphd_flags: MPHD flags from the WDT. Bit 0x4 indicates
+                highres alpha maps.
 
         Returns:
             dict: Complete tile data including chunks with full fidelity.
         """
+        # Derive highres from WDT MPHD flags (bit 0x4)
+        highres = bool(mphd_flags & 0x4)
+
         # Get tile-level data from read_adt
-        adt_data = read_adt(adt_filepath)
+        adt_data = read_adt(adt_filepath, highres=highres)
 
         # Also load ADTFile for per-chunk detail
         adt_file = None
         if ADTFile is not None:
             try:
-                adt_file = ADTFile(filepath=adt_filepath, highres=True)
+                adt_file = ADTFile(filepath=adt_filepath, highres=highres)
             except Exception as e:
                 log.warning("Failed to load ADTFile for %s: %s",
                             adt_filepath, e)
@@ -1132,11 +1140,12 @@ class ZoneExporter(object):
 
     def _export_wmo_data(self, output_dir, dungeon_def, files_dict):
         """
-        Export WMO dungeon data to root.json and group_NNN.json files.
+        Export WMO dungeon data as glTF 2.0 binary (.glb) + sidecar JSON.
 
-        Splits the dungeon definition returned by read_dungeon() into
-        a root JSON file and one JSON file per room group.  Each WMO set
-        gets its own subdirectory under wmo/ keyed by name.
+        Writes geometry (vertices, triangles, normals, UVs, face materials)
+        into a single .glb file per WMO set.  WoW-specific metadata
+        (portals, lights, doodads, per-group bounds/center/mogp_flags)
+        goes into a sidecar .json file.
 
         Args:
             output_dir: Base output directory for the dungeon export.
@@ -1144,53 +1153,50 @@ class ZoneExporter(object):
             files_dict: Files dict to update with WMO file references.
         """
         wmo_name = dungeon_def['name']
-        wmo_subdir = "wmo/{}".format(wmo_name)
 
-        # Write root.json
-        root_data = {
+        # --- Write .glb geometry ---
+        glb_rel = "wmo/{}.glb".format(wmo_name)
+        glb_path = os.path.join(output_dir, glb_rel)
+
+        writer = WMOGltfWriter(glb_path)
+        writer.write(dungeon_def['materials'], dungeon_def.get('rooms', []))
+
+        # --- Write sidecar .json metadata ---
+        groups_meta = []
+        for idx, room in enumerate(dungeon_def.get('rooms', [])):
+            groups_meta.append({
+                "group_index": idx,
+                "name": room.get('name', 'Group_{:03d}'.format(idx)),
+                "bounds": room.get('bounds', {}),
+                "center": room.get('center', [0, 0, 0]),
+                "mogp_flags": room.get('mogp_flags', 0),
+            })
+
+        sidecar_data = {
             "name": wmo_name,
             "materials": dungeon_def['materials'],
             "portals": dungeon_def['portals'],
             "lights": dungeon_def['lights'],
             "doodads": dungeon_def['doodads'],
+            "groups": groups_meta,
         }
-        root_rel = "{}/root.json".format(wmo_subdir)
-        root_path = os.path.join(output_dir, root_rel)
-        save_json(root_path, root_data)
+
+        meta_rel = "wmo/{}.json".format(wmo_name)
+        meta_path = os.path.join(output_dir, meta_rel)
+        save_json(meta_path, sidecar_data)
 
         # Initialise wmo_sets list in files_dict if needed
         if "wmo_sets" not in files_dict:
             files_dict["wmo_sets"] = []
 
-        # Write one group file per room
-        group_files = []
-        for idx, room in enumerate(dungeon_def.get('rooms', [])):
-            group_data = {
-                "group_index": idx,
-                "type": room.get('type', 'raw_mesh'),
-                "name": room.get('name', 'Group_{:03d}'.format(idx)),
-                "vertices": room.get('vertices', []),
-                "triangles": room.get('triangles', []),
-                "normals": room.get('normals', []),
-                "uvs": room.get('uvs', []),
-                "face_materials": room.get('face_materials', []),
-                "bounds": room.get('bounds', {}),
-                "center": room.get('center', [0, 0, 0]),
-            }
-
-            group_filename = "{}/group_{:03d}.json".format(wmo_subdir, idx)
-            group_path = os.path.join(output_dir, group_filename)
-            save_json(group_path, group_data)
-            group_files.append(group_filename)
-
         files_dict["wmo_sets"].append({
             "name": wmo_name,
-            "root": root_rel,
-            "groups": group_files,
+            "geometry": glb_rel,
+            "metadata": meta_rel,
         })
 
-        log.info("Exported WMO '%s': root + %d group files",
-                 wmo_name, len(group_files))
+        log.info("Exported WMO '%s': .glb + sidecar .json (%d groups)",
+                 wmo_name, len(groups_meta))
 
 
 # ---------------------------------------------------------------------------

@@ -744,7 +744,7 @@ def _derive_tile_coords(position_x, position_y):
     return tile_x, tile_y
 
 
-def read_adt(filepath):
+def read_adt(filepath, highres=False):
     """
     Read an ADT binary file and extract terrain data.
 
@@ -753,6 +753,8 @@ def read_adt(filepath):
 
     Args:
         filepath: Path to the ADT file (string or path-like object).
+        highres: Whether to read alpha maps as highres 64x64 bytes.
+            Should be True when WDT MPHD flag 0x4 is set.
 
     Returns:
         dict: {
@@ -784,7 +786,7 @@ def read_adt(filepath):
                 "Ensure adt_file.py is importable.")
 
     log.debug("Reading ADT file: %s", filepath)
-    adt = ADTFile(filepath=filepath, highres=True)
+    adt = ADTFile(filepath=filepath, highres=highres)
 
     # --- Extract texture paths from MTEX ---
     texture_paths = []

@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 # Schema version
 # ---------------------------------------------------------------------------
 
-FORMAT_VERSION = "1.0.0"
+FORMAT_VERSION = "2.0.0"
 
 
 # ---------------------------------------------------------------------------
@@ -501,6 +501,12 @@ try:
     _HAS_PIL = True
 except ImportError:
     _HAS_PIL = False
+
+try:
+    import pygltflib
+    _HAS_GLTFLIB = True
+except ImportError:
+    _HAS_GLTFLIB = False
 
 
 class TileImageWriter(object):
@@ -1083,3 +1089,482 @@ class TileImageReader(object):
             tile['chunks'].append(chunk)
 
         return tile
+
+
+# ---------------------------------------------------------------------------
+# WMO glTF format: compact .glb representation for WMO dungeon geometry
+# ---------------------------------------------------------------------------
+
+import struct as _struct
+from collections import defaultdict as _defaultdict
+
+
+class WMOGltfWriter(object):
+    """
+    Writes WMO dungeon geometry as a glTF 2.0 binary (.glb) file.
+
+    Each WMO group becomes a named mesh node in the glTF scene. Triangles
+    are split by material_id into separate primitives (glTF requires one
+    material per primitive). MOPY face flags are stored in primitive
+    extras.face_flags. Material extras carry WoW shader properties.
+    """
+
+    def __init__(self, output_path):
+        """
+        Args:
+            output_path: Path to write the .glb file to.
+        """
+        if not _HAS_GLTFLIB:
+            raise ImportError("pygltflib is required for glTF WMO format")
+        self.output_path = output_path
+
+    def write(self, materials, rooms):
+        """
+        Write WMO materials and rooms to a .glb file.
+
+        Args:
+            materials: List of material dicts from dungeon_def['materials'].
+            rooms: List of room dicts from dungeon_def['rooms'], each with
+                   vertices, triangles, normals, uvs, face_materials.
+        """
+        gltf = pygltflib.GLTF2(
+            asset=pygltflib.Asset(version="2.0", generator="wow-pywowlib"),
+            scene=0,
+            scenes=[pygltflib.Scene(nodes=[])],
+        )
+
+        blob = bytearray()
+
+        # Build glTF materials from WoW materials
+        gltf_materials = self._build_materials(materials)
+        gltf.materials = gltf_materials
+
+        # Add a null material at the end for material_id 255 (invisible)
+        null_mat = pygltflib.Material(
+            name="__null_collision__",
+            extras={"wow_null": True},
+        )
+        null_mat_index = len(gltf.materials)
+        gltf.materials.append(null_mat)
+
+        # Build mesh nodes for each room/group
+        for room_idx, room in enumerate(rooms):
+            node_idx = len(gltf.nodes)
+            gltf.scenes[0].nodes.append(node_idx)
+
+            mesh_idx = len(gltf.meshes)
+            node_name = room.get('name', 'Group_{:03d}'.format(room_idx))
+            gltf.nodes.append(pygltflib.Node(name=node_name, mesh=mesh_idx))
+
+            primitives = self._build_mesh_primitives(
+                gltf, blob, room, materials, null_mat_index)
+            gltf.meshes.append(pygltflib.Mesh(
+                name=node_name, primitives=primitives))
+
+        # Set the binary blob
+        gltf.buffers = [pygltflib.Buffer(byteLength=len(blob))]
+        gltf.set_binary_blob(bytes(blob))
+
+        # Write .glb
+        parent = os.path.dirname(self.output_path)
+        if parent and not os.path.exists(parent):
+            os.makedirs(parent)
+        gltf.save_binary(self.output_path)
+
+        log.info("Wrote glTF binary: %s (%d bytes)",
+                 self.output_path, len(blob))
+
+    def _build_materials(self, materials):
+        """Build glTF Material list from WoW material dicts."""
+        result = []
+        for mat in materials:
+            tex1 = mat.get('texture1', '')
+            gltf_mat = pygltflib.Material(
+                name=tex1,
+                extras={
+                    'shader': mat.get('shader', 0),
+                    'blend_mode': mat.get('blend_mode', 0),
+                    'terrain_type': mat.get('terrain_type', 0),
+                    'flags': mat.get('flags', 0),
+                    'emissive_color': list(mat.get('emissive_color', (0, 0, 0, 0))),
+                    'diff_color': list(mat.get('diff_color', (0, 0, 0, 0))),
+                    'texture1': tex1,
+                    'texture2': mat.get('texture2', ''),
+                },
+            )
+            result.append(gltf_mat)
+        return result
+
+    def _build_mesh_primitives(self, gltf, blob, room, materials,
+                               null_mat_index):
+        """
+        Build glTF primitives for a single WMO group/room.
+
+        Splits triangles by material_id. Each material_id gets its own
+        primitive with deduplicated vertex data.
+        """
+        vertices = room.get('vertices', [])
+        triangles = room.get('triangles', [])
+        normals = room.get('normals', [])
+        uvs = room.get('uvs', [])
+        face_materials = room.get('face_materials', [])
+
+        # Group triangle indices by material_id
+        mat_groups = _defaultdict(list)
+        for tri_idx, tri in enumerate(triangles):
+            if tri_idx < len(face_materials):
+                mat_id = face_materials[tri_idx].get('material_id', 0)
+            else:
+                mat_id = 0
+            mat_groups[mat_id].append(tri_idx)
+
+        primitives = []
+        for mat_id in sorted(mat_groups.keys()):
+            tri_indices = mat_groups[mat_id]
+
+            # Collect face flags for this primitive
+            face_flags = []
+            for ti in tri_indices:
+                if ti < len(face_materials):
+                    face_flags.append(face_materials[ti].get('flags', 0))
+                else:
+                    face_flags.append(0)
+
+            # Remap vertex indices: collect unique verts used by these tris
+            old_to_new = {}
+            prim_verts = []
+            prim_normals = []
+            prim_uvs = []
+            prim_indices = []
+
+            for ti in tri_indices:
+                tri = triangles[ti]
+                remapped = []
+                for vi in tri:
+                    if vi not in old_to_new:
+                        new_idx = len(prim_verts)
+                        old_to_new[vi] = new_idx
+                        prim_verts.append(
+                            vertices[vi] if vi < len(vertices)
+                            else (0.0, 0.0, 0.0))
+                        if normals and vi < len(normals):
+                            prim_normals.append(normals[vi])
+                        elif normals:
+                            prim_normals.append((0.0, 0.0, 1.0))
+                        if uvs and vi < len(uvs):
+                            prim_uvs.append(uvs[vi])
+                        elif uvs:
+                            prim_uvs.append((0.0, 0.0))
+                    remapped.append(old_to_new[vi])
+                prim_indices.extend(remapped)
+
+            # Determine glTF material index
+            if mat_id == 255:
+                gltf_mat_idx = null_mat_index
+            elif mat_id < len(materials):
+                gltf_mat_idx = mat_id
+            else:
+                gltf_mat_idx = null_mat_index
+
+            # Write binary data to blob
+            prim = self._write_primitive_data(
+                gltf, blob, prim_verts, prim_normals, prim_uvs,
+                prim_indices, gltf_mat_idx, face_flags)
+            primitives.append(prim)
+
+        return primitives
+
+    def _write_primitive_data(self, gltf, blob, verts, normals, uvs,
+                              indices, material_idx, face_flags):
+        """Write vertex/index data to the binary blob and create accessors."""
+        attributes = pygltflib.Attributes()
+
+        # --- Indices ---
+        # Use UNSIGNED_SHORT if possible, else UNSIGNED_INT
+        max_idx = max(indices) if indices else 0
+        if max_idx <= 65535:
+            idx_fmt = '<H'
+            idx_component = pygltflib.UNSIGNED_SHORT
+            idx_byte_size = 2
+        else:
+            idx_fmt = '<I'
+            idx_component = pygltflib.UNSIGNED_INT
+            idx_byte_size = 4
+
+        idx_offset = len(blob)
+        for i in indices:
+            blob.extend(_struct.pack(idx_fmt, i))
+        idx_length = len(blob) - idx_offset
+        # Pad to 4-byte alignment
+        while len(blob) % 4 != 0:
+            blob.append(0)
+
+        idx_bv = len(gltf.bufferViews)
+        gltf.bufferViews.append(pygltflib.BufferView(
+            buffer=0,
+            byteOffset=idx_offset,
+            byteLength=idx_length,
+            target=pygltflib.ELEMENT_ARRAY_BUFFER,
+        ))
+        idx_acc = len(gltf.accessors)
+        gltf.accessors.append(pygltflib.Accessor(
+            bufferView=idx_bv,
+            componentType=idx_component,
+            count=len(indices),
+            type=pygltflib.SCALAR,
+            max=[max_idx],
+            min=[min(indices)] if indices else [0],
+        ))
+
+        # --- Positions ---
+        pos_offset = len(blob)
+        mins = [float('inf')] * 3
+        maxs = [float('-inf')] * 3
+        for v in verts:
+            for c in range(3):
+                val = float(v[c]) if c < len(v) else 0.0
+                if val < mins[c]:
+                    mins[c] = val
+                if val > maxs[c]:
+                    maxs[c] = val
+                blob.extend(_struct.pack('<f', val))
+        pos_length = len(blob) - pos_offset
+
+        if not verts:
+            mins = [0.0, 0.0, 0.0]
+            maxs = [0.0, 0.0, 0.0]
+
+        pos_bv = len(gltf.bufferViews)
+        gltf.bufferViews.append(pygltflib.BufferView(
+            buffer=0,
+            byteOffset=pos_offset,
+            byteLength=pos_length,
+            target=pygltflib.ARRAY_BUFFER,
+        ))
+        pos_acc = len(gltf.accessors)
+        gltf.accessors.append(pygltflib.Accessor(
+            bufferView=pos_bv,
+            componentType=pygltflib.FLOAT,
+            count=len(verts),
+            type=pygltflib.VEC3,
+            max=maxs,
+            min=mins,
+        ))
+        attributes.POSITION = pos_acc
+
+        # --- Normals ---
+        if normals:
+            norm_offset = len(blob)
+            for n in normals:
+                for c in range(3):
+                    val = float(n[c]) if c < len(n) else 0.0
+                    blob.extend(_struct.pack('<f', val))
+            norm_length = len(blob) - norm_offset
+
+            norm_bv = len(gltf.bufferViews)
+            gltf.bufferViews.append(pygltflib.BufferView(
+                buffer=0,
+                byteOffset=norm_offset,
+                byteLength=norm_length,
+                target=pygltflib.ARRAY_BUFFER,
+            ))
+            norm_acc = len(gltf.accessors)
+            gltf.accessors.append(pygltflib.Accessor(
+                bufferView=norm_bv,
+                componentType=pygltflib.FLOAT,
+                count=len(normals),
+                type=pygltflib.VEC3,
+            ))
+            attributes.NORMAL = norm_acc
+
+        # --- UVs ---
+        if uvs:
+            uv_offset = len(blob)
+            for u in uvs:
+                for c in range(2):
+                    val = float(u[c]) if c < len(u) else 0.0
+                    blob.extend(_struct.pack('<f', val))
+            uv_length = len(blob) - uv_offset
+
+            uv_bv = len(gltf.bufferViews)
+            gltf.bufferViews.append(pygltflib.BufferView(
+                buffer=0,
+                byteOffset=uv_offset,
+                byteLength=uv_length,
+                target=pygltflib.ARRAY_BUFFER,
+            ))
+            uv_acc = len(gltf.accessors)
+            gltf.accessors.append(pygltflib.Accessor(
+                bufferView=uv_bv,
+                componentType=pygltflib.FLOAT,
+                count=len(uvs),
+                type=pygltflib.VEC2,
+            ))
+            attributes.TEXCOORD_0 = uv_acc
+
+        prim = pygltflib.Primitive(
+            attributes=attributes,
+            indices=idx_acc,
+            material=material_idx,
+            mode=pygltflib.TRIANGLES,
+            extras={"face_flags": face_flags},
+        )
+
+        return prim
+
+
+class WMOGltfReader(object):
+    """
+    Reads WMO dungeon geometry from a glTF 2.0 binary (.glb) file.
+
+    Reconstructs room geometry and face_materials lists from the glTF
+    scene structure, merging primitives back per mesh node.
+    """
+
+    def __init__(self, glb_path):
+        """
+        Args:
+            glb_path: Path to the .glb file.
+        """
+        if not _HAS_GLTFLIB:
+            raise ImportError("pygltflib is required for glTF WMO format")
+        self.glb_path = glb_path
+
+    def read(self):
+        """
+        Read geometry and material extras from the .glb file.
+
+        Returns:
+            tuple: (material_extras, rooms)
+                material_extras: list of dicts with WoW material properties
+                    from glTF material extras.
+                rooms: list of room dicts, each with vertices, triangles,
+                    normals, uvs, face_materials compatible with
+                    build_dungeon() input.
+        """
+        gltf = pygltflib.GLTF2.load_binary(self.glb_path)
+        blob = gltf.binary_blob()
+
+        # Extract material extras
+        material_extras = []
+        for mat in gltf.materials:
+            extras = mat.extras if mat.extras else {}
+            material_extras.append(extras)
+
+        # Extract rooms from mesh nodes
+        rooms = []
+        scene = gltf.scenes[gltf.scene]
+        for node_idx in scene.nodes:
+            node = gltf.nodes[node_idx]
+            if node.mesh is None:
+                continue
+
+            mesh = gltf.meshes[node.mesh]
+            room = self._read_mesh(gltf, blob, mesh, node.name or '')
+            rooms.append(room)
+
+        return material_extras, rooms
+
+    def _read_mesh(self, gltf, blob, mesh, node_name):
+        """Read a single mesh node back into a room dict."""
+        all_verts = []
+        all_normals = []
+        all_uvs = []
+        all_triangles = []
+        all_face_materials = []
+
+        for prim in mesh.primitives:
+            vert_offset = len(all_verts)
+
+            # Read positions
+            prim_verts = self._read_accessor_vec(
+                gltf, blob, prim.attributes.POSITION, 3)
+            all_verts.extend(prim_verts)
+
+            # Read normals
+            if prim.attributes.NORMAL is not None:
+                prim_normals = self._read_accessor_vec(
+                    gltf, blob, prim.attributes.NORMAL, 3)
+                all_normals.extend(prim_normals)
+
+            # Read UVs
+            if prim.attributes.TEXCOORD_0 is not None:
+                prim_uvs = self._read_accessor_vec(
+                    gltf, blob, prim.attributes.TEXCOORD_0, 2)
+                all_uvs.extend(prim_uvs)
+
+            # Read indices
+            prim_indices = self._read_accessor_scalar(
+                gltf, blob, prim.indices)
+
+            # Determine material_id from glTF material index
+            gltf_mat_idx = prim.material if prim.material is not None else 0
+            mat = gltf.materials[gltf_mat_idx] if gltf_mat_idx < len(gltf.materials) else None
+            if mat and mat.extras and mat.extras.get('wow_null'):
+                mat_id = 255
+            else:
+                mat_id = gltf_mat_idx
+
+            # Read face_flags from primitive extras
+            extras = prim.extras if prim.extras else {}
+            face_flags_list = extras.get('face_flags', [])
+
+            # Reconstruct triangles with offset and face_materials
+            tri_count = len(prim_indices) // 3
+            for ti in range(tri_count):
+                i0 = prim_indices[ti * 3] + vert_offset
+                i1 = prim_indices[ti * 3 + 1] + vert_offset
+                i2 = prim_indices[ti * 3 + 2] + vert_offset
+                all_triangles.append((i0, i1, i2))
+
+                flags = face_flags_list[ti] if ti < len(face_flags_list) else 0
+                all_face_materials.append({
+                    'flags': flags,
+                    'material_id': mat_id,
+                })
+
+        return {
+            'type': 'raw_mesh',
+            'name': node_name,
+            'vertices': all_verts,
+            'triangles': all_triangles,
+            'normals': all_normals,
+            'uvs': all_uvs,
+            'face_materials': all_face_materials,
+        }
+
+    def _read_accessor_vec(self, gltf, blob, acc_idx, components):
+        """Read a VEC2/VEC3 accessor into a list of tuples."""
+        if acc_idx is None:
+            return []
+        acc = gltf.accessors[acc_idx]
+        bv = gltf.bufferViews[acc.bufferView]
+        offset = bv.byteOffset + (acc.byteOffset or 0)
+        result = []
+        for i in range(acc.count):
+            vals = _struct.unpack_from(
+                '<' + 'f' * components, blob, offset + i * 4 * components)
+            result.append(tuple(vals))
+        return result
+
+    def _read_accessor_scalar(self, gltf, blob, acc_idx):
+        """Read a SCALAR accessor (indices) into a list of ints."""
+        if acc_idx is None:
+            return []
+        acc = gltf.accessors[acc_idx]
+        bv = gltf.bufferViews[acc.bufferView]
+        offset = bv.byteOffset + (acc.byteOffset or 0)
+        result = []
+        if acc.componentType == pygltflib.UNSIGNED_SHORT:
+            for i in range(acc.count):
+                val = _struct.unpack_from('<H', blob, offset + i * 2)[0]
+                result.append(val)
+        elif acc.componentType == pygltflib.UNSIGNED_INT:
+            for i in range(acc.count):
+                val = _struct.unpack_from('<I', blob, offset + i * 4)[0]
+                result.append(val)
+        elif acc.componentType == pygltflib.UNSIGNED_BYTE:
+            for i in range(acc.count):
+                val = _struct.unpack_from('<B', blob, offset + i)[0]
+                result.append(val)
+        return result
