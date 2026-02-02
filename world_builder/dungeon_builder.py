@@ -2361,12 +2361,15 @@ def read_dungeon(wmo_filepath, version=17):
         )
 
     try:
-        from wmo_file import WMOFile
-    except ImportError:
-        raise ImportError(
-            "Parent library wmo_file is required for read_dungeon(). "
-            "Ensure wmo_file.py is importable."
-        )
+        from ..wmo_file import WMOFile
+    except (ImportError, SystemError):
+        try:
+            from wmo_file import WMOFile
+        except ImportError:
+            raise ImportError(
+                "Parent library wmo_file is required for read_dungeon(). "
+                "Ensure wmo_file.py is importable."
+            )
 
     log.info("Reading WMO dungeon from: %s", wmo_filepath)
 

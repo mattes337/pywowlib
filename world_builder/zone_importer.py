@@ -25,6 +25,7 @@ from .dbc_injector import (DBCInjector, register_map, register_area,
                            register_world_map_area, register_world_map_overlay)
 from .mpq_packer import MPQPacker
 from .intermediate_format import load_json, FORMAT_VERSION, IDAllocator
+from .intermediate_format import TileImageReader
 
 log = logging.getLogger(__name__)
 
@@ -130,11 +131,11 @@ class ZoneImporter:
             tile_file = tile.get('file', '')
             tile_path = os.path.join(self.export_dir, tile_file)
 
-            if not os.path.isfile(tile_path):
-                log.warning("Tile file not found, skipping: %s", tile_path)
+            tile_json = self._load_tile(tile_path)
+            if tile_json is None:
+                log.warning("Tile not found, skipping: %s", tile_path)
                 continue
 
-            tile_json = load_json(tile_path)
             adt_bytes = self._build_adt_tile(tile_json, id_map)
             adt_dict[(tx, ty)] = adt_bytes
             log.debug("Generated ADT for tile (%d, %d)", tx, ty)
@@ -249,11 +250,10 @@ class ZoneImporter:
                 tile_file = tile.get('file', '')
                 tile_path = os.path.join(self.export_dir, tile_file)
 
-                if not os.path.isfile(tile_path):
-                    log.warning("Tile file not found, skipping: %s", tile_path)
+                tile_json = self._load_tile(tile_path)
+                if tile_json is None:
+                    log.warning("Tile not found, skipping: %s", tile_path)
                     continue
-
-                tile_json = load_json(tile_path)
 
                 # Skip non-terrain tile files (e.g. dungeon.json)
                 if 'chunks' not in tile_json and 'tile_x' not in tile_json:
@@ -441,6 +441,37 @@ class ZoneImporter:
                         map_point_x=overlay.get('map_point_x', 0),
                         map_point_y=overlay.get('map_point_y', 0),
                     )
+
+    # ------------------------------------------------------------------
+    # Tile loading (auto-detect format)
+    # ------------------------------------------------------------------
+
+    def _load_tile(self, tile_path):
+        """
+        Load tile data from either image format (directory) or legacy JSON.
+
+        If tile_path is a directory containing meta.json, reads using
+        TileImageReader. If it's a JSON file, loads directly. Returns
+        None if the tile cannot be found.
+
+        Args:
+            tile_path: Path to either a tile directory or a .json file.
+
+        Returns:
+            dict: Tile data dict, or None if not found.
+        """
+        if os.path.isdir(tile_path):
+            meta_path = os.path.join(tile_path, "meta.json")
+            if os.path.isfile(meta_path):
+                reader = TileImageReader(tile_path)
+                return reader.to_tile_json()
+            log.warning("Tile directory has no meta.json: %s", tile_path)
+            return None
+
+        if os.path.isfile(tile_path):
+            return load_json(tile_path)
+
+        return None
 
     # ------------------------------------------------------------------
     # ADT tile reconstruction

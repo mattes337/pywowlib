@@ -490,3 +490,596 @@ class IDAllocator(object):
     def next_lfgdungeon_id(self):
         """Return the next available LFGDungeons.dbc ID."""
         return self._next("lfgdungeon")
+
+
+# ---------------------------------------------------------------------------
+# Tile image format: compact PNG + meta.json tile representation
+# ---------------------------------------------------------------------------
+
+try:
+    from PIL import Image
+    _HAS_PIL = True
+except ImportError:
+    _HAS_PIL = False
+
+
+class TileImageWriter(object):
+    """
+    Writes tile data as PNG images + meta.json.
+
+    Converts the heavy per-chunk arrays (heightmap, shadows, alpha maps,
+    normals, vertex colors) into compact PNG files, reducing tile size
+    from ~20 MB JSON to ~200 KB.
+    """
+
+    def __init__(self, tile_dir):
+        """
+        Args:
+            tile_dir: Directory to write PNG files and meta.json into.
+        """
+        if not _HAS_PIL:
+            raise ImportError("Pillow (PIL) is required for image tile format")
+        self.tile_dir = tile_dir
+        if not os.path.exists(tile_dir):
+            os.makedirs(tile_dir)
+
+    def write_heightmap(self, chunks):
+        """
+        Write a 129x129 16-bit grayscale PNG from per-chunk 145-float heights.
+
+        Extracts outer 9x9 vertices from each chunk's interleaved 145-float
+        layout and combines them into a tile-level 129x129 grid.
+
+        Args:
+            chunks: List of 256 chunk dicts, each with 'heightmap' (145 floats).
+
+        Returns:
+            tuple: (filename, height_min, height_scale) or (None, 0, 0) if
+                   no height data.
+        """
+        if not chunks:
+            return None, 0.0, 0.0
+
+        # Extract outer 9x9 from each chunk into 129x129 grid
+        grid = [[0.0] * 129 for _ in range(129)]
+        has_data = False
+
+        for chunk_idx, chunk in enumerate(chunks):
+            heights_145 = chunk.get('heightmap', [])
+            if not heights_145:
+                continue
+            has_data = True
+            chunk_row = chunk_idx // 16
+            chunk_col = chunk_idx % 16
+
+            idx = 0
+            for interleaved_row in range(17):
+                if interleaved_row % 2 == 0:
+                    outer_row_idx = interleaved_row // 2
+                    global_row = chunk_row * 8 + outer_row_idx
+                    for col_idx in range(9):
+                        if idx < len(heights_145):
+                            global_col = chunk_col * 8 + col_idx
+                            if global_row < 129 and global_col < 129:
+                                grid[global_row][global_col] = heights_145[idx]
+                        idx += 1
+                else:
+                    idx += 8
+
+        if not has_data:
+            return None, 0.0, 0.0
+
+        # Find range for normalisation
+        flat = [v for row in grid for v in row]
+        height_min = min(flat)
+        height_max = max(flat)
+        height_scale = height_max - height_min
+        if height_scale < 1e-6:
+            height_scale = 1.0
+
+        # Build 16-bit image
+        img = Image.new('I;16', (129, 129))
+        pixels = img.load()
+        for r in range(129):
+            for c in range(129):
+                normalised = (grid[r][c] - height_min) / height_scale
+                pixels[c, r] = int(normalised * 65535 + 0.5)
+
+        filename = "heightmap.png"
+        img.save(os.path.join(self.tile_dir, filename))
+        return filename, height_min, height_scale
+
+    def write_shadow_map(self, chunks):
+        """
+        Write a 1024x1024 8-bit grayscale PNG from per-chunk 64x64 shadow bitmaps.
+
+        Args:
+            chunks: List of 256 chunk dicts, each optionally with 'shadow_map'
+                    (64x64 2D list of 0/1 values).
+
+        Returns:
+            str or None: Filename if written, None if no shadow data.
+        """
+        has_data = any(c.get('shadow_map') for c in chunks)
+        if not has_data:
+            return None
+
+        img = Image.new('L', (1024, 1024), 0)
+        pixels = img.load()
+
+        for chunk_idx, chunk in enumerate(chunks):
+            shadow = chunk.get('shadow_map')
+            if not shadow:
+                continue
+            chunk_row = chunk_idx // 16
+            chunk_col = chunk_idx % 16
+            base_y = chunk_row * 64
+            base_x = chunk_col * 64
+
+            for sr in range(min(64, len(shadow))):
+                row_data = shadow[sr]
+                for sc in range(min(64, len(row_data))):
+                    if row_data[sc]:
+                        pixels[base_x + sc, base_y + sr] = 255
+
+        filename = "shadow.png"
+        img.save(os.path.join(self.tile_dir, filename))
+        return filename
+
+    def write_alpha_maps(self, chunks):
+        """
+        Write one 1024x1024 8-bit grayscale PNG per texture layer alpha map.
+
+        Each chunk has 64x64 alpha per texture layer (layers 1+). These are
+        tiled into a 1024x1024 image per layer index.
+
+        Args:
+            chunks: List of 256 chunk dicts, each optionally with
+                    'texture_layers' containing per-layer alpha_map data.
+
+        Returns:
+            list: List of (layer_index, filename) tuples for layers written.
+        """
+        # Discover which layer indices have alpha data
+        layer_indices = set()
+        for chunk in chunks:
+            for layer in chunk.get('texture_layers', []):
+                if layer.get('alpha_map'):
+                    layer_indices.add(layer.get('texture_index', 0))
+
+        # Actually, layer index in the texture_layers list is what matters,
+        # not texture_index. Let's track by list position.
+        layer_indices = set()
+        for chunk in chunks:
+            layers = chunk.get('texture_layers', [])
+            for li in range(1, len(layers)):
+                if layers[li].get('alpha_map'):
+                    layer_indices.add(li)
+
+        if not layer_indices:
+            return []
+
+        result = []
+        for li in sorted(layer_indices):
+            img = Image.new('L', (1024, 1024), 0)
+            pixels = img.load()
+
+            for chunk_idx, chunk in enumerate(chunks):
+                layers = chunk.get('texture_layers', [])
+                if li >= len(layers):
+                    continue
+                alpha = layers[li].get('alpha_map')
+                if not alpha:
+                    continue
+
+                chunk_row = chunk_idx // 16
+                chunk_col = chunk_idx % 16
+                base_y = chunk_row * 64
+                base_x = chunk_col * 64
+
+                for ar in range(min(64, len(alpha))):
+                    row_data = alpha[ar]
+                    for ac in range(min(64, len(row_data))):
+                        pixels[base_x + ac, base_y + ar] = row_data[ac]
+
+            filename = "alpha_{}.png".format(li)
+            img.save(os.path.join(self.tile_dir, filename))
+            result.append((li, filename))
+
+        return result
+
+    def write_normals(self, chunks):
+        """
+        Write a 129x129 RGB PNG from per-chunk normals.
+
+        Outer 9x9 normals per chunk are combined into a 129x129 tile grid.
+        R=X+128, G=Y+128, B=Z (maps signed int8 to unsigned byte).
+        Informational only; normals are recomputed from heightmap on import.
+
+        Args:
+            chunks: List of 256 chunk dicts, each with 'normals' (145 triplets).
+
+        Returns:
+            str or None: Filename if written, None if no normal data.
+        """
+        has_data = any(c.get('normals') for c in chunks)
+        if not has_data:
+            return None
+
+        img = Image.new('RGB', (129, 129), (128, 128, 127))
+        pixels = img.load()
+
+        for chunk_idx, chunk in enumerate(chunks):
+            normals = chunk.get('normals', [])
+            if not normals:
+                continue
+            chunk_row = chunk_idx // 16
+            chunk_col = chunk_idx % 16
+
+            idx = 0
+            for interleaved_row in range(17):
+                if interleaved_row % 2 == 0:
+                    outer_row_idx = interleaved_row // 2
+                    global_row = chunk_row * 8 + outer_row_idx
+                    for col_idx in range(9):
+                        if idx < len(normals):
+                            global_col = chunk_col * 8 + col_idx
+                            if global_row < 129 and global_col < 129:
+                                n = normals[idx]
+                                r = max(0, min(255, n[0] + 128))
+                                g = max(0, min(255, n[1] + 128))
+                                b = max(0, min(255, n[2]))
+                                pixels[global_col, global_row] = (r, g, b)
+                        idx += 1
+                else:
+                    idx += 8
+
+        filename = "normals.png"
+        img.save(os.path.join(self.tile_dir, filename))
+        return filename
+
+    def write_vertex_colors(self, chunks):
+        """
+        Write a 129x129 RGBA PNG from per-chunk vertex colors.
+
+        Outer 9x9 vertex colors per chunk are combined into a 129x129 grid.
+        Direct RGBA mapping.
+
+        Args:
+            chunks: List of 256 chunk dicts, each optionally with
+                    'vertex_colors' (145 RGBA tuples).
+
+        Returns:
+            str or None: Filename if written, None if no vertex color data.
+        """
+        has_data = any(c.get('vertex_colors') for c in chunks)
+        if not has_data:
+            return None
+
+        img = Image.new('RGBA', (129, 129), (127, 127, 127, 255))
+        pixels = img.load()
+
+        for chunk_idx, chunk in enumerate(chunks):
+            colors = chunk.get('vertex_colors', [])
+            if not colors:
+                continue
+            chunk_row = chunk_idx // 16
+            chunk_col = chunk_idx % 16
+
+            idx = 0
+            for interleaved_row in range(17):
+                if interleaved_row % 2 == 0:
+                    outer_row_idx = interleaved_row // 2
+                    global_row = chunk_row * 8 + outer_row_idx
+                    for col_idx in range(9):
+                        if idx < len(colors):
+                            global_col = chunk_col * 8 + col_idx
+                            if global_row < 129 and global_col < 129:
+                                c = colors[idx]
+                                r = max(0, min(255, c[0]))
+                                g = max(0, min(255, c[1]))
+                                b = max(0, min(255, c[2]))
+                                a = max(0, min(255, c[3] if len(c) > 3 else 255))
+                                pixels[global_col, global_row] = (r, g, b, a)
+                        idx += 1
+                else:
+                    idx += 8
+
+        filename = "vertex_colors.png"
+        img.save(os.path.join(self.tile_dir, filename))
+        return filename
+
+
+class TileImageReader(object):
+    """
+    Reads tile data back from PNG images + meta.json.
+
+    Reconstructs the arrays expected by the importer's _build_adt_tile()
+    from the compact PNG tile format.
+    """
+
+    def __init__(self, tile_dir):
+        """
+        Args:
+            tile_dir: Directory containing meta.json and PNG files.
+        """
+        if not _HAS_PIL:
+            raise ImportError("Pillow (PIL) is required for image tile format")
+        self.tile_dir = tile_dir
+
+    def read_heightmap(self, meta):
+        """
+        Read a 129x129 heightmap from a 16-bit grayscale PNG.
+
+        Reverses the normalisation using height_min and height_scale from
+        meta.json: height = pixel_value / 65535.0 * height_scale + height_min
+
+        Args:
+            meta: Parsed meta.json dict with 'height_min', 'height_scale',
+                  and 'images.heightmap'.
+
+        Returns:
+            list: 129x129 2D list of float heights, or None if no heightmap.
+        """
+        images = meta.get('images', {})
+        filename = images.get('heightmap')
+        if not filename:
+            return None
+
+        filepath = os.path.join(self.tile_dir, filename)
+        if not os.path.isfile(filepath):
+            log.warning("Heightmap PNG not found: %s", filepath)
+            return None
+
+        height_min = meta.get('height_min', 0.0)
+        height_scale = meta.get('height_scale', 1.0)
+
+        img = Image.open(filepath)
+        heightmap = [[0.0] * 129 for _ in range(129)]
+
+        for r in range(129):
+            for c in range(129):
+                pixel = img.getpixel((c, r))
+                if isinstance(pixel, tuple):
+                    pixel = pixel[0]
+                heightmap[r][c] = (pixel / 65535.0) * height_scale + height_min
+
+        return heightmap
+
+    def read_shadow_map(self, meta):
+        """
+        Read per-chunk 64x64 shadow maps from a 1024x1024 grayscale PNG.
+
+        Args:
+            meta: Parsed meta.json dict with 'images.shadow'.
+
+        Returns:
+            list: List of 256 shadow maps (each 64x64 2D list of 0/1),
+                  indexed by chunk_row*16+chunk_col, or None.
+        """
+        images = meta.get('images', {})
+        filename = images.get('shadow')
+        if not filename:
+            return None
+
+        filepath = os.path.join(self.tile_dir, filename)
+        if not os.path.isfile(filepath):
+            return None
+
+        img = Image.open(filepath).convert('L')
+        shadows = []
+
+        for chunk_idx in range(256):
+            chunk_row = chunk_idx // 16
+            chunk_col = chunk_idx % 16
+            base_y = chunk_row * 64
+            base_x = chunk_col * 64
+
+            shadow = []
+            for sr in range(64):
+                row = []
+                for sc in range(64):
+                    val = img.getpixel((base_x + sc, base_y + sr))
+                    row.append(1 if val > 127 else 0)
+                shadow.append(row)
+            shadows.append(shadow)
+
+        return shadows
+
+    def read_alpha_maps(self, meta):
+        """
+        Read per-layer alpha maps from 1024x1024 grayscale PNGs.
+
+        Args:
+            meta: Parsed meta.json dict with 'images.alpha_maps'.
+
+        Returns:
+            dict: {layer_index: list of 256 alpha maps (each 64x64)},
+                  or None if no alpha data.
+        """
+        images = meta.get('images', {})
+        alpha_files = images.get('alpha_maps', [])
+        if not alpha_files:
+            return None
+
+        result = {}
+        for entry in alpha_files:
+            li = entry.get('layer_index', 0)
+            filename = entry.get('file', '')
+            filepath = os.path.join(self.tile_dir, filename)
+            if not os.path.isfile(filepath):
+                continue
+
+            img = Image.open(filepath).convert('L')
+            per_chunk = []
+
+            for chunk_idx in range(256):
+                chunk_row = chunk_idx // 16
+                chunk_col = chunk_idx % 16
+                base_y = chunk_row * 64
+                base_x = chunk_col * 64
+
+                alpha = []
+                for ar in range(64):
+                    row = []
+                    for ac in range(64):
+                        row.append(img.getpixel((base_x + ac, base_y + ar)))
+                    alpha.append(row)
+                per_chunk.append(alpha)
+
+            result[li] = per_chunk
+
+        return result if result else None
+
+    def read_vertex_colors(self, meta):
+        """
+        Read per-chunk vertex colors from a 129x129 RGBA PNG.
+
+        Distributes the 129x129 grid back into per-chunk outer 9x9 arrays.
+
+        Args:
+            meta: Parsed meta.json dict with 'images.vertex_colors'.
+
+        Returns:
+            list: List of 256 vertex color arrays (each 145 RGBA tuples,
+                  with inner vertices interpolated as defaults), or None.
+        """
+        images = meta.get('images', {})
+        filename = images.get('vertex_colors')
+        if not filename:
+            return None
+
+        filepath = os.path.join(self.tile_dir, filename)
+        if not os.path.isfile(filepath):
+            return None
+
+        img = Image.open(filepath).convert('RGBA')
+        default_color = [127, 127, 127, 255]
+        per_chunk = []
+
+        for chunk_idx in range(256):
+            chunk_row = chunk_idx // 16
+            chunk_col = chunk_idx % 16
+            colors_145 = []
+
+            for interleaved_row in range(17):
+                if interleaved_row % 2 == 0:
+                    outer_row_idx = interleaved_row // 2
+                    global_row = chunk_row * 8 + outer_row_idx
+                    for col_idx in range(9):
+                        global_col = chunk_col * 8 + col_idx
+                        if global_row < 129 and global_col < 129:
+                            px = img.getpixel((global_col, global_row))
+                            colors_145.append(list(px))
+                        else:
+                            colors_145.append(list(default_color))
+                else:
+                    for _ in range(8):
+                        colors_145.append(list(default_color))
+
+            per_chunk.append(colors_145)
+
+        return per_chunk
+
+    def to_tile_json(self):
+        """
+        Read meta.json and all PNGs, reconstructing a tile dict compatible
+        with the importer's _build_adt_tile() input format.
+
+        Returns:
+            dict: Tile data dict with 'tile_x', 'tile_y', 'textures',
+                  'chunks', etc. matching the monolithic JSON structure.
+        """
+        meta_path = os.path.join(self.tile_dir, "meta.json")
+        meta = load_json(meta_path)
+
+        heightmap = self.read_heightmap(meta)
+        shadows = self.read_shadow_map(meta)
+        alpha_maps = self.read_alpha_maps(meta)
+        vertex_colors = self.read_vertex_colors(meta)
+
+        tile = {
+            'tile_x': meta.get('tile_x', 0),
+            'tile_y': meta.get('tile_y', 0),
+            'textures': meta.get('textures', []),
+            'm2_models': meta.get('m2_models', []),
+            'wmo_models': meta.get('wmo_models', []),
+            'doodad_placements': meta.get('doodad_placements', []),
+            'wmo_placements': meta.get('wmo_placements', []),
+            'chunks': [],
+        }
+
+        # Rebuild per-chunk data
+        chunk_metas = meta.get('chunks', [])
+        for chunk_idx in range(256):
+            chunk_row = chunk_idx // 16
+            chunk_col = chunk_idx % 16
+
+            # Get chunk metadata (flags, area_id, etc.)
+            cm = chunk_metas[chunk_idx] if chunk_idx < len(chunk_metas) else {}
+
+            chunk = {
+                'index_x': cm.get('index_x', chunk_col),
+                'index_y': cm.get('index_y', chunk_row),
+                'flags': cm.get('flags', 0),
+                'area_id': cm.get('area_id', 0),
+                'holes': cm.get('holes', 0),
+                'position': cm.get('position', [0.0, 0.0, 0.0]),
+                'heightmap': [0.0] * 145,
+                'normals': [[0, 0, 127]] * 145,
+                'texture_layers': cm.get('texture_layers', []),
+                'shadow_map': None,
+                'vertex_colors': None,
+                'sound_emitters': [],
+            }
+
+            # Fill heightmap 145-float from 129x129 grid
+            if heightmap:
+                heights_145 = []
+                for interleaved_row in range(17):
+                    if interleaved_row % 2 == 0:
+                        outer_row_idx = interleaved_row // 2
+                        global_row = chunk_row * 8 + outer_row_idx
+                        for col_idx in range(9):
+                            global_col = chunk_col * 8 + col_idx
+                            if global_row < 129 and global_col < 129:
+                                heights_145.append(heightmap[global_row][global_col])
+                            else:
+                                heights_145.append(0.0)
+                    else:
+                        # Inner vertices: interpolate from surrounding outers
+                        inner_row_idx = interleaved_row // 2
+                        for col_idx in range(8):
+                            gr_top = chunk_row * 8 + inner_row_idx
+                            gr_bot = gr_top + 1
+                            gc_left = chunk_col * 8 + col_idx
+                            gc_right = gc_left + 1
+                            if (gr_top < 129 and gr_bot < 129
+                                    and gc_left < 129 and gc_right < 129):
+                                avg = (heightmap[gr_top][gc_left]
+                                       + heightmap[gr_top][gc_right]
+                                       + heightmap[gr_bot][gc_left]
+                                       + heightmap[gr_bot][gc_right]) / 4.0
+                                heights_145.append(avg)
+                            else:
+                                heights_145.append(0.0)
+                chunk['heightmap'] = heights_145
+
+            # Fill shadow map
+            if shadows:
+                chunk['shadow_map'] = shadows[chunk_idx]
+
+            # Fill alpha maps into texture_layers
+            if alpha_maps:
+                for li, per_chunk_alphas in alpha_maps.items():
+                    if li < len(chunk['texture_layers']):
+                        chunk['texture_layers'][li]['alpha_map'] = \
+                            per_chunk_alphas[chunk_idx]
+
+            # Fill vertex colors
+            if vertex_colors:
+                chunk['vertex_colors'] = vertex_colors[chunk_idx]
+
+            tile['chunks'].append(chunk)
+
+        return tile

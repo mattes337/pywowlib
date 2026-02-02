@@ -37,7 +37,8 @@ from .wdt_generator import read_wdt
 from .adt_composer import read_adt
 from .dungeon_builder import read_dungeon
 from .dbc_injector import DBCInjector
-from .intermediate_format import slugify, save_json, FORMAT_VERSION
+from .intermediate_format import slugify, save_json, load_json, FORMAT_VERSION
+from .intermediate_format import TileImageWriter
 
 try:
     from ..adt_file import ADTFile
@@ -60,7 +61,8 @@ class ZoneExporter(object):
     in full fidelity.
     """
 
-    def __init__(self, game_data_dir, dbc_dir, output_base="exports"):
+    def __init__(self, game_data_dir, dbc_dir, output_base="exports",
+                 image_format=True):
         """
         Initialize the zone exporter.
 
@@ -68,10 +70,13 @@ class ZoneExporter(object):
             game_data_dir: Root of extracted game files (contains World/Maps/...).
             dbc_dir: Path to DBFilesClient directory containing DBC files.
             output_base: Base directory for exports (e.g. "exports").
+            image_format: If True, export tiles as directory of PNGs + meta.json.
+                          If False, use monolithic JSON (legacy format).
         """
         self.game_data_dir = game_data_dir
         self.dbc_dir = dbc_dir
         self.output_base = output_base
+        self.image_format = image_format
 
     # ------------------------------------------------------------------
     # Public API
@@ -158,12 +163,18 @@ class ZoneExporter(object):
                             x, y, adt_filepath)
                 continue
 
-            tile_rel_path = "tiles/{}_{}.json".format(x, y)
-            tile_abs_path = os.path.join(output_dir, tile_rel_path)
-
             try:
                 tile_data = self._export_adt_tile(adt_filepath)
-                save_json(tile_abs_path, tile_data)
+
+                if self.image_format:
+                    tile_rel_path = "tiles/{}_{}".format(x, y)
+                    tile_abs_dir = os.path.join(output_dir, tile_rel_path)
+                    self._write_tile_images(tile_abs_dir, tile_data)
+                else:
+                    tile_rel_path = "tiles/{}_{}.json".format(x, y)
+                    tile_abs_path = os.path.join(output_dir, tile_rel_path)
+                    save_json(tile_abs_path, tile_data)
+
                 tiles_list.append({"x": x, "y": y, "file": tile_rel_path})
                 log.info("Exported tile (%d, %d)", x, y)
             except Exception as e:
@@ -274,12 +285,20 @@ class ZoneExporter(object):
                     if not os.path.isfile(adt_filepath):
                         continue
 
-                    tile_rel_path = "tiles/{}_{}.json".format(x, y)
-                    tile_abs_path = os.path.join(output_dir, tile_rel_path)
-
                     try:
                         tile_data = self._export_adt_tile(adt_filepath)
-                        save_json(tile_abs_path, tile_data)
+
+                        if self.image_format:
+                            tile_rel_path = "tiles/{}_{}".format(x, y)
+                            tile_abs_dir = os.path.join(
+                                output_dir, tile_rel_path)
+                            self._write_tile_images(tile_abs_dir, tile_data)
+                        else:
+                            tile_rel_path = "tiles/{}_{}.json".format(x, y)
+                            tile_abs_path = os.path.join(
+                                output_dir, tile_rel_path)
+                            save_json(tile_abs_path, tile_data)
+
                         tiles_list.append({
                             "x": x, "y": y, "file": tile_rel_path
                         })
@@ -1049,6 +1068,85 @@ class ZoneExporter(object):
         return tile
 
     # ------------------------------------------------------------------
+    # Image tile export
+    # ------------------------------------------------------------------
+
+    def _write_tile_images(self, tile_dir, tile_data):
+        """
+        Write tile data as a directory of PNG images + meta.json.
+
+        Uses TileImageWriter to convert heavy per-chunk arrays into
+        compact PNG files.
+
+        Args:
+            tile_dir: Directory to write PNG files and meta.json into.
+            tile_data: Dict returned by _export_adt_tile().
+        """
+        writer = TileImageWriter(tile_dir)
+        chunks = tile_data.get('chunks', [])
+
+        # Write images
+        hm_file, height_min, height_scale = writer.write_heightmap(chunks)
+        shadow_file = writer.write_shadow_map(chunks)
+        alpha_results = writer.write_alpha_maps(chunks)
+        normals_file = writer.write_normals(chunks)
+        vc_file = writer.write_vertex_colors(chunks)
+
+        # Build images manifest
+        images = {}
+        if hm_file:
+            images['heightmap'] = hm_file
+        if shadow_file:
+            images['shadow'] = shadow_file
+        if normals_file:
+            images['normals'] = normals_file
+        if vc_file:
+            images['vertex_colors'] = vc_file
+        if alpha_results:
+            images['alpha_maps'] = [
+                {'layer_index': li, 'file': fn}
+                for li, fn in alpha_results
+            ]
+
+        # Build chunk metadata (small: flags, area_id, texture_layers, etc.)
+        chunk_metas = []
+        for chunk in chunks:
+            cm = {
+                'index_x': chunk.get('index_x', 0),
+                'index_y': chunk.get('index_y', 0),
+                'flags': chunk.get('flags', 0),
+                'area_id': chunk.get('area_id', 0),
+                'holes': chunk.get('holes', 0),
+                'position': chunk.get('position', [0.0, 0.0, 0.0]),
+                'texture_layers': [],
+            }
+            for layer in chunk.get('texture_layers', []):
+                cm['texture_layers'].append({
+                    'texture_index': layer.get('texture_index', 0),
+                    'flags': layer.get('flags', 0),
+                    'effect_id': layer.get('effect_id', 0),
+                })
+            chunk_metas.append(cm)
+
+        # Write meta.json
+        meta = {
+            'tile_x': tile_data.get('tile_x', 0),
+            'tile_y': tile_data.get('tile_y', 0),
+            'textures': tile_data.get('textures', []),
+            'm2_models': tile_data.get('m2_models', []),
+            'wmo_models': tile_data.get('wmo_models', []),
+            'doodad_placements': tile_data.get('doodad_placements', []),
+            'wmo_placements': tile_data.get('wmo_placements', []),
+            'images': images,
+            'chunks': chunk_metas,
+        }
+        if hm_file:
+            meta['height_min'] = height_min
+            meta['height_scale'] = height_scale
+
+        save_json(os.path.join(tile_dir, "meta.json"), meta)
+
+    # ------------------------------------------------------------------
     # WMO export helper
     # ------------------------------------------------------------------
 
@@ -1119,9 +1217,10 @@ class ZoneExporter(object):
 # Convenience functions
 # ---------------------------------------------------------------------------
 
-def export_zone(game_data_dir, dbc_dir, map_name, map_id, output_base="exports"):
+def export_zone(game_data_dir, dbc_dir, map_name, map_id,
+                output_base="exports", image_format=True):
     """
-    Export a zone from binary game files to intermediate JSON format.
+    Export a zone from binary game files to intermediate format.
 
     Convenience wrapper around ZoneExporter.export_zone().
 
@@ -1131,18 +1230,22 @@ def export_zone(game_data_dir, dbc_dir, map_name, map_id, output_base="exports")
         map_name: Internal map directory name.
         map_id: Numeric map ID.
         output_base: Base directory for exports.
+        image_format: If True, export tiles as PNG + meta.json directories.
+                      If False, use monolithic JSON (legacy).
 
     Returns:
         str: Path to the generated manifest.json, or None on failure.
     """
-    exporter = ZoneExporter(game_data_dir, dbc_dir, output_base)
+    exporter = ZoneExporter(game_data_dir, dbc_dir, output_base,
+                            image_format=image_format)
     return exporter.export_zone(map_name, map_id)
 
 
 def export_dungeon(game_data_dir, dbc_dir, map_name, map_id,
-                   wmo_path=None, wmo_paths=None, output_base="exports"):
+                   wmo_path=None, wmo_paths=None, output_base="exports",
+                   image_format=True):
     """
-    Export a dungeon from binary game files to intermediate JSON format.
+    Export a dungeon from binary game files to intermediate format.
 
     Convenience wrapper around ZoneExporter.export_dungeon().
 
@@ -1154,9 +1257,12 @@ def export_dungeon(game_data_dir, dbc_dir, map_name, map_id,
         wmo_path: Optional path to a single WMO root file.
         wmo_paths: Optional list of paths to multiple WMO root files.
         output_base: Base directory for exports.
+        image_format: If True, export tiles as PNG + meta.json directories.
+                      If False, use monolithic JSON (legacy).
 
     Returns:
         str: Path to the generated manifest.json, or None on failure.
     """
-    exporter = ZoneExporter(game_data_dir, dbc_dir, output_base)
+    exporter = ZoneExporter(game_data_dir, dbc_dir, output_base,
+                            image_format=image_format)
     return exporter.export_dungeon(map_name, map_id, wmo_path, wmo_paths)
