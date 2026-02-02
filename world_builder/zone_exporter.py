@@ -21,9 +21,9 @@ Exported layout (dungeon):
         map.json
         areas.json
         dungeon.json
-        wmo/root.json
-        wmo/group_NNN.json
-        tiles/{x}_{y}.json   (if terrain exists)
+        wmo/{wmo_name}/root.json          (per WMO set)
+        wmo/{wmo_name}/group_NNN.json     (per WMO group)
+        tiles/{x}_{y}.json                (if terrain exists)
 
 Target build: WotLK 3.3.5a (build 12340)
 """
@@ -190,7 +190,8 @@ class ZoneExporter(object):
                  len(tiles_list))
         return manifest_path
 
-    def export_dungeon(self, map_name, map_id, wmo_path=None):
+    def export_dungeon(self, map_name, map_id, wmo_path=None,
+                       wmo_paths=None):
         """
         Export a complete dungeon from binary game files to intermediate JSON.
 
@@ -200,8 +201,9 @@ class ZoneExporter(object):
         Args:
             map_name: Internal map directory name (e.g. "TheDeadmines").
             map_id: Numeric map ID matching Map.dbc.
-            wmo_path: Optional path to the WMO root file. If provided,
-                      dungeon geometry is exported from the WMO.
+            wmo_path: Optional path to a single WMO root file.
+            wmo_paths: Optional list of paths to multiple WMO root files.
+                       Overrides wmo_path if both provided.
 
         Returns:
             str: Path to the generated manifest.json, or None on failure.
@@ -231,16 +233,24 @@ class ZoneExporter(object):
             save_json(dung_json_path, dungeon_records)
             files_dict["dungeon"] = "dungeon.json"
 
-        # Export WMO geometry if path provided
-        if wmo_path and os.path.isfile(wmo_path):
-            try:
-                dungeon_def = read_dungeon(wmo_path)
-                self._export_wmo_data(output_dir, dungeon_def, files_dict)
-                log.info("Exported WMO geometry from: %s", wmo_path)
-            except Exception as e:
-                log.warning("Failed to read WMO %s: %s", wmo_path, e)
+        # Build list of WMO paths to export
+        all_wmo_paths = []
+        if wmo_paths:
+            all_wmo_paths = list(wmo_paths)
         elif wmo_path:
-            log.warning("WMO file not found: %s", wmo_path)
+            all_wmo_paths = [wmo_path]
+
+        # Export WMO geometry for each WMO root file
+        for wp in all_wmo_paths:
+            if not os.path.isfile(wp):
+                log.warning("WMO file not found: %s", wp)
+                continue
+            try:
+                dungeon_def = read_dungeon(wp)
+                self._export_wmo_data(output_dir, dungeon_def, files_dict)
+                log.info("Exported WMO geometry from: %s", wp)
+            except Exception as e:
+                log.warning("Failed to read WMO %s: %s", wp, e)
 
         # Export terrain tiles if WDT exists
         tiles_list = []
@@ -964,17 +974,10 @@ class ZoneExporter(object):
                         # Full 145-float heightmap from MCVT
                         heightmap_145 = list(mcnk.mcvt.height)
 
-                        # Normals from MCNR - 145 triplets of int8
-                        normals = []
+                        # Normals from MCNR - 145 tuples of (x, y, z) int8
                         try:
-                            raw_normals = mcnk.mcnr.normals
-                            for i in range(145):
-                                normals.append([
-                                    raw_normals[i * 3],
-                                    raw_normals[i * 3 + 1],
-                                    raw_normals[i * 3 + 2],
-                                ])
-                        except (AttributeError, TypeError):
+                            normals = [list(n) for n in mcnk.mcnr.normals]
+                        except (AttributeError, TypeError, IndexError):
                             normals = [[0, 0, 127]] * 145
 
                         # Texture layers from MCLY + alpha maps from MCAL
@@ -1054,24 +1057,32 @@ class ZoneExporter(object):
         Export WMO dungeon data to root.json and group_NNN.json files.
 
         Splits the dungeon definition returned by read_dungeon() into
-        a root JSON file and one JSON file per room group.
+        a root JSON file and one JSON file per room group.  Each WMO set
+        gets its own subdirectory under wmo/ keyed by name.
 
         Args:
             output_dir: Base output directory for the dungeon export.
             dungeon_def: Dict returned by read_dungeon().
             files_dict: Files dict to update with WMO file references.
         """
+        wmo_name = dungeon_def['name']
+        wmo_subdir = "wmo/{}".format(wmo_name)
+
         # Write root.json
         root_data = {
-            "name": dungeon_def['name'],
+            "name": wmo_name,
             "materials": dungeon_def['materials'],
             "portals": dungeon_def['portals'],
             "lights": dungeon_def['lights'],
             "doodads": dungeon_def['doodads'],
         }
-        root_path = os.path.join(output_dir, "wmo", "root.json")
+        root_rel = "{}/root.json".format(wmo_subdir)
+        root_path = os.path.join(output_dir, root_rel)
         save_json(root_path, root_data)
-        files_dict["wmo_root"] = "wmo/root.json"
+
+        # Initialise wmo_sets list in files_dict if needed
+        if "wmo_sets" not in files_dict:
+            files_dict["wmo_sets"] = []
 
         # Write one group file per room
         group_files = []
@@ -1089,14 +1100,19 @@ class ZoneExporter(object):
                 "center": room.get('center', [0, 0, 0]),
             }
 
-            group_filename = "wmo/group_{:03d}.json".format(idx)
+            group_filename = "{}/group_{:03d}.json".format(wmo_subdir, idx)
             group_path = os.path.join(output_dir, group_filename)
             save_json(group_path, group_data)
             group_files.append(group_filename)
 
-        files_dict["wmo_groups"] = group_files
+        files_dict["wmo_sets"].append({
+            "name": wmo_name,
+            "root": root_rel,
+            "groups": group_files,
+        })
 
-        log.info("Exported WMO: root + %d group files", len(group_files))
+        log.info("Exported WMO '%s': root + %d group files",
+                 wmo_name, len(group_files))
 
 
 # ---------------------------------------------------------------------------
@@ -1124,7 +1140,7 @@ def export_zone(game_data_dir, dbc_dir, map_name, map_id, output_base="exports")
 
 
 def export_dungeon(game_data_dir, dbc_dir, map_name, map_id,
-                   wmo_path=None, output_base="exports"):
+                   wmo_path=None, wmo_paths=None, output_base="exports"):
     """
     Export a dungeon from binary game files to intermediate JSON format.
 
@@ -1135,11 +1151,12 @@ def export_dungeon(game_data_dir, dbc_dir, map_name, map_id,
         dbc_dir: Path to DBFilesClient directory.
         map_name: Internal map directory name.
         map_id: Numeric map ID.
-        wmo_path: Optional path to WMO root file.
+        wmo_path: Optional path to a single WMO root file.
+        wmo_paths: Optional list of paths to multiple WMO root files.
         output_base: Base directory for exports.
 
     Returns:
         str: Path to the generated manifest.json, or None on failure.
     """
     exporter = ZoneExporter(game_data_dir, dbc_dir, output_base)
-    return exporter.export_dungeon(map_name, map_id, wmo_path)
+    return exporter.export_dungeon(map_name, map_id, wmo_path, wmo_paths)
