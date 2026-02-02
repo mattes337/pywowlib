@@ -341,6 +341,48 @@ class IOProtocol(Protocol):
     def write(self, f) -> Self: ...
 
 
+class ChunkHeader:
+    size = 8    # Oops, duplicate name. It resolves fine, though.
+
+    def __init__(self, magic='', size=0):
+        self.magic = magic
+        self.size = size
+
+    def read(self, f):
+        self.magic = f.read(4)[0:4].decode('ascii')
+        self.size = unpack("I", f.read(4))[0]
+
+        return self
+
+    def write(self, f):
+        f.write(self.magic[:4].encode('ascii'))
+        f.write(pack('I', self.size))
+
+        return self
+
+
+class StringBlockChunk:
+    magic = ""
+
+    def __init__(self):
+        self.header = ChunkHeader(self.magic)
+        self.filenames = StringBlock()
+
+    def read(self, f):
+        self.header.read(f)
+        self.filenames.size = self.header.size
+        self.filenames.read(f)
+
+        return self
+
+    def write(self, f):
+        self.header.size = self.filenames.size
+        self.header.write(f)
+        self.filenames.write(f)
+
+        return self
+
+
 class ContentChunk:  # for inheriting only
 
     def __init__(self):
