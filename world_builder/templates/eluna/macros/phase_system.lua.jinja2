@@ -1,0 +1,53 @@
+{# macros/phase_system.lua.jinja2 - Multi-phase boss transition system #}
+
+{% macro phase_transition(boss, phase, prev_phase) %}
+    -- Phase {{ phase.phase_id }} transition at {{ phase.hp_range[1] }}% HP
+    if hp_pct <= {{ phase.hp_range[1] }} and current_phase == {{ prev_phase.phase_id if prev_phase else 0 }} then
+        creature:SetData("PHASE", {{ phase.phase_id }})
+
+        {% if phase.on_enter %}
+        {% if phase.on_enter.yell %}
+        -- Phase transition yell
+        creature:SendUnitYell("{{ phase.on_enter.yell }}", 0)
+        {% endif %}
+        {% if phase.on_enter.sound_id %}
+        creature:PlayDirectSound({{ phase.on_enter.sound_id }})
+        {% endif %}
+        {% endif %}
+
+        -- Remove all previous phase timers
+        creature:RemoveEvents()
+
+        {% if phase.on_enter and phase.on_enter.action is defined and phase.on_enter.action %}
+        {% if phase.on_enter.action.type == 'transform_adds' %}
+        -- Transform adds: {{ phase.on_enter.action.from_entry }} -> {{ phase.on_enter.action.to_entry }}
+        local old_adds = creature:GetCreaturesInRange(100, {{ phase.on_enter.action.from_entry }})
+        for _, add in pairs(old_adds) do
+            if add:IsAlive() then
+                local ax, ay, az, ao = add:GetLocation()
+                add:DespawnOrUnsummon(0)
+                creature:SummonCreature({{ phase.on_enter.action.to_entry }}, ax, ay, az, ao, 1, 0)
+            end
+        end
+        {% elif phase.on_enter.action.type == 'despawn_all_adds' %}
+        -- Despawn all adds
+        {% for npc in boss.npcs %}
+        local despawn_list_{{ loop.index }} = creature:GetCreaturesInRange(100, {{ npc.entry }})
+        for _, add in pairs(despawn_list_{{ loop.index }}) do
+            if add:IsAlive() then
+                add:DespawnOrUnsummon(0)
+            end
+        end
+        {% endfor %}
+        {% elif phase.on_enter.action.type == 'apply_buff' %}
+        -- Apply buff
+        creature:CastSpell(creature, {{ phase.on_enter.action.buff_spell }}, false)
+        {% endif %}
+        {% endif %}
+
+        -- Start Phase {{ phase.phase_id }} ability timers
+        {% for ability in phase.abilities %}
+        creature:RegisterEvent(Boss.{{ ability.func_name }}, {{ ability.timer.initial }}, 0)
+        {% endfor %}
+    end
+{% endmacro %}

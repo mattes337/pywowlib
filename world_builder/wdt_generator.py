@@ -14,8 +14,11 @@ All chunk magics are reversed in the binary file (e.g. 'REVM' for MVER).
 All integers are unsigned 32-bit little-endian.
 """
 
+import logging
 import struct
 from io import BytesIO
+
+log = logging.getLogger(__name__)
 
 
 # Grid dimensions
@@ -135,3 +138,97 @@ def write_wdt(filepath, active_coords, mphd_flags=0):
     data = create_wdt(active_coords, mphd_flags)
     with open(filepath, 'wb') as f:
         f.write(data)
+
+
+def read_wdt(filepath):
+    """
+    Read a WDT binary file and extract tile presence data.
+
+    Parses MVER, MPHD, and MAIN chunks to determine which ADT tiles
+    are active on the map. The returned data can be passed directly
+    to create_wdt() for roundtripping.
+
+    Args:
+        filepath: Path to the WDT file (string or path-like object).
+
+    Returns:
+        dict: {
+            'active_coords': list of (x, y) tuples for active tiles,
+            'mphd_flags': int with MPHD flags value,
+            'version': int with file version (should be 18),
+        }
+
+    Raises:
+        ValueError: If the file cannot be parsed or has an invalid version.
+    """
+    with open(filepath, 'rb') as f:
+        data = f.read()
+
+    buf = BytesIO(data)
+    version = None
+    mphd_flags = 0
+    active_coords = []
+
+    while buf.tell() < len(data):
+        chunk_start = buf.tell()
+
+        # Read chunk header: 4-byte magic + uint32 size
+        magic_bytes = buf.read(4)
+        if len(magic_bytes) < 4:
+            break
+        size_bytes = buf.read(4)
+        if len(size_bytes) < 4:
+            break
+
+        chunk_size = struct.unpack('<I', size_bytes)[0]
+        chunk_data_start = buf.tell()
+
+        if magic_bytes == _MAGIC_MVER:
+            if chunk_size < _MVER_DATA_SIZE:
+                raise ValueError(
+                    "MVER chunk too small: {} bytes".format(chunk_size))
+            version = struct.unpack('<I', buf.read(4))[0]
+            if version != _WDT_VERSION:
+                raise ValueError(
+                    "Unsupported WDT version: {}. Expected {}.".format(
+                        version, _WDT_VERSION))
+            log.debug("WDT version: %d", version)
+
+        elif magic_bytes == _MAGIC_MPHD:
+            if chunk_size < 4:
+                raise ValueError(
+                    "MPHD chunk too small: {} bytes".format(chunk_size))
+            mphd_flags = struct.unpack('<I', buf.read(4))[0]
+            log.debug("MPHD flags: 0x%X", mphd_flags)
+
+        elif magic_bytes == _MAGIC_MAIN:
+            expected_size = _MAIN_DATA_SIZE
+            if chunk_size < expected_size:
+                raise ValueError(
+                    "MAIN chunk too small: {} bytes, expected {}".format(
+                        chunk_size, expected_size))
+
+            for y in range(_GRID_SIZE):
+                for x in range(_GRID_SIZE):
+                    entry_data = buf.read(_MAIN_ENTRY_SIZE)
+                    if len(entry_data) < _MAIN_ENTRY_SIZE:
+                        raise ValueError(
+                            "Unexpected end of MAIN chunk at tile ({}, {})".format(
+                                x, y))
+                    flags, async_id = struct.unpack('<II', entry_data)
+                    if flags & _TILE_EXISTS_FLAG:
+                        active_coords.append((x, y))
+
+            log.debug("Found %d active tiles", len(active_coords))
+
+        # Advance past the chunk data regardless of which chunk it was
+        buf.seek(chunk_data_start + chunk_size)
+
+    if version is None:
+        raise ValueError("No MVER chunk found in WDT file")
+
+    return {
+        'active_coords': active_coords,
+        'mphd_flags': mphd_flags,
+        'version': version,
+    }

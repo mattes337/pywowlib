@@ -1,0 +1,40 @@
+{# macros/achievements.lua.jinja2 - Achievement tracking system #}
+
+{% macro achievement_variables(boss) %}
+{% if boss.achievements %}
+-- ========================================
+-- ACHIEVEMENT TRACKING
+-- ========================================
+{% for ach in boss.achievements %}
+local achievement_{{ ach.tracking.variable }} = 0
+{% endfor %}
+{% endif %}
+{% endmacro %}
+
+{% macro achievement_reset(boss) %}
+{% if boss.achievements %}
+    -- Reset achievement tracking
+    {% for ach in boss.achievements %}
+    achievement_{{ ach.tracking.variable }} = 0
+    {% endfor %}
+{% endif %}
+{% endmacro %}
+
+{% macro achievement_check_on_death(boss) %}
+{% if boss.achievements %}
+    -- Check achievements
+    {% for ach in boss.achievements %}
+    -- {{ ach.name }}: {{ ach.description }}
+    {% if ach.tracking.condition == 'equals' %}
+    if achievement_{{ ach.tracking.variable }} == {{ ach.tracking.value }} then
+        local players = creature:GetPlayersInRange(1000)
+        for _, player in pairs(players) do
+            if player:IsInCombat() then
+                player:CompletedAchievement({{ ach.id }})
+            end
+        end
+    end
+    {% endif %}
+    {% endfor %}
+{% endif %}
+{% endmacro %}

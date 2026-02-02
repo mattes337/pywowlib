@@ -1,0 +1,70 @@
+{# macros/add_management.lua.jinja2 - Add spawning and management #}
+
+{% macro summon_adds_function(boss, ability, phase) %}
+-- {{ ability.name }} ({{ ability.description }})
+function Boss.{{ ability.func_name }}(event, delay, repeats, creature)
+    {% if phase %}
+    local current_phase = creature:GetData("PHASE")
+
+    -- Only in Phase {{ phase.phase_id }}
+    if current_phase ~= {{ phase.phase_id }} then
+        return
+    end
+    {% endif %}
+
+    {% if ability.summon.position == 'random_around_boss' %}
+    -- Summon {{ ability.summon.count }} adds at random positions around boss
+    for i = 1, {{ ability.summon.count }} do
+        local angle = math.random() * 2 * math.pi
+        local x, y, z, o = creature:GetLocation()
+        local spawn_x = x + {{ ability.summon.radius }} * math.cos(angle)
+        local spawn_y = y + {{ ability.summon.radius }} * math.sin(angle)
+
+        local add = creature:SummonCreature({{ ability.summon.entry }}, spawn_x, spawn_y, z, o, 1, {{ ability.summon.duration }})
+        if add then
+            -- Attack a random player
+            local target = Boss.GetRandomPlayer(creature)
+            if target then
+                add:Attack(target)
+            end
+        end
+    end
+    {% elif ability.summon.position == 'fixed_spawn_points' %}
+    -- Summon adds at fixed spawn points
+    local spawn_points = {
+        {% for point in ability.summon.spawn_points %}
+        {x = {{ point.x }}, y = {{ point.y }}, z = {{ point.z }}},
+        {% endfor %}
+    }
+    for _, point in ipairs(spawn_points) do
+        local add = creature:SummonCreature({{ ability.summon.entry }}, point.x, point.y, point.z, 0, 1, {{ ability.summon.duration }})
+        if add then
+            local target = Boss.GetRandomPlayer(creature)
+            if target then
+                add:Attack(target)
+            end
+        end
+    end
+    {% endif %}
+
+    -- Reschedule
+    {% if ability.timer.min == ability.timer.max %}
+    creature:RegisterEvent(Boss.{{ ability.func_name }}, {{ ability.timer.min }}, 0)
+    {% else %}
+    local next_cast = math.random({{ ability.timer.min }}, {{ ability.timer.max }})
+    creature:RegisterEvent(Boss.{{ ability.func_name }}, next_cast, 0)
+    {% endif %}
+end
+{% endmacro %}
+
+{% macro despawn_adds(boss) %}
+    -- Despawn all summoned adds
+    {% for npc in boss.npcs %}
+    local cleanup_{{ loop.index }} = creature:GetCreaturesInRange(100, {{ npc.entry }})
+    for _, add in pairs(cleanup_{{ loop.index }}) do
+        if add:IsAlive() then
+            add:DespawnOrUnsummon(0)
+        end
+    end
+    {% endfor %}
+{% endmacro %}

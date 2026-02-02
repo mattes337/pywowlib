@@ -2,15 +2,30 @@
 World Builder - Headless World Compiler for WoW WotLK 3.3.5a
 
 Provides a high-level API for programmatically generating WoW map terrain,
-registering custom maps in DBC files, and packaging everything into MPQ archives.
+registering custom maps in DBC files, packaging everything into MPQ archives,
+and generating all supporting assets (artwork, scripts, SQL, dungeons, etc.).
 """
 
 import os
 
-from .wdt_generator import create_wdt, write_wdt
-from .adt_composer import create_adt, write_adt
+from .wdt_generator import create_wdt, write_wdt, read_wdt
+from .adt_composer import create_adt, write_adt, read_adt
 from .dbc_injector import DBCInjector, register_map, register_area
-from .mpq_packer import MPQPacker, pack_map
+from .mpq_packer import MPQPacker, pack_map, MPQExtractor, extract_map
+from .blp_converter import convert_png_to_blp, image_to_blp, batch_convert, validate_blp
+from .minimap_pipeline import import_minimap_tiles, generate_test_minimaps
+from .terrain_sculptor import (TerrainSculptor, sculpt_zone, sculpt_for_adt_composer,
+                               import_heightmap_from_adt, import_texture_rules_from_adt)
+from .dungeon_builder import build_dungeon, export_spawn_coordinates, read_dungeon
+from .artwork_pipeline import (generate_world_map, generate_subzone_overlays,
+                               generate_loading_screen, generate_dungeon_map,
+                               generate_zone_artwork_bundle,
+                               import_artwork_image)
+from .script_generator import ScriptGenerator, import_lua_script
+from .spell_registry import SpellRegistry
+from .sql_generator import SQLGenerator, import_sql
+from .qa_validator import QAValidator
+from .qa_report import QAReport
 
 
 def build_zone(name, output_dir, coords=None, heightmap=None, texture_paths=None,

@@ -1,0 +1,55 @@
+{# macros/target_selection.lua.jinja2 - Target selection helper functions #}
+
+{% macro target_selection_helpers() %}
+-- ========================================
+-- HELPER FUNCTIONS
+-- ========================================
+function Boss.GetRandomPlayer(creature)
+    local threat_list = creature:GetAITargets()
+    local players = {}
+
+    -- Filter for players only
+    for _, unit in pairs(threat_list) do
+        if unit:IsPlayer() then
+            table.insert(players, unit)
+        end
+    end
+
+    -- Return random player
+    if #players > 0 then
+        return players[math.random(1, #players)]
+    end
+
+    -- Fallback to current victim
+    return creature:GetVictim()
+end
+
+function Boss.GetPlayersInMeleeRange(creature)
+    local threat_list = creature:GetAITargets()
+    local melee_players = {}
+
+    for _, unit in pairs(threat_list) do
+        if unit:IsPlayer() and creature:GetDistance(unit) <= 5.0 then
+            table.insert(melee_players, unit)
+        end
+    end
+
+    return melee_players
+end
+
+function Boss.GetPlayersAtRange(creature, min_range, max_range)
+    local threat_list = creature:GetAITargets()
+    local ranged_players = {}
+
+    for _, unit in pairs(threat_list) do
+        if unit:IsPlayer() then
+            local dist = creature:GetDistance(unit)
+            if dist >= min_range and dist <= max_range then
+                table.insert(ranged_players, unit)
+            end
+        end
+    end
+
+    return ranged_players
+end
+{% endmacro %}

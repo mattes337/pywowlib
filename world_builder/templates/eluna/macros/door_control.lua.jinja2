@@ -1,0 +1,31 @@
+{# macros/door_control.lua.jinja2 - Door lock/unlock management #}
+
+{% macro door_management_functions(instance) %}
+-- ========================================
+-- DOOR MANAGEMENT
+-- ========================================
+function INSTANCE.SetDoorState(instance, door_entry, state)
+    local door = instance:GetGameObject(door_entry)
+    if door then
+        door:SetGoState(state)  -- 0 = closed, 1 = open
+    end
+end
+
+function INSTANCE.UnlockDoor(instance, door_entry)
+    INSTANCE.SetDoorState(instance, door_entry, 1)
+
+    -- Update door state bitmask
+    local door_state = instance:GetData(DATA_DOOR_STATE) or 0
+    {% for door in instance.doors %}
+    {% if loop.first %}
+    if door_entry == INSTANCE.{{ door.const_name }} then
+        door_state = bit.bor(door_state, {{ 2 ** loop.index0 }})
+    {% else %}
+    elseif door_entry == INSTANCE.{{ door.const_name }} then
+        door_state = bit.bor(door_state, {{ 2 ** loop.index0 }})
+    {% endif %}
+    {% endfor %}
+    end
+    instance:SetData(DATA_DOOR_STATE, door_state)
+end
+{% endmacro %}

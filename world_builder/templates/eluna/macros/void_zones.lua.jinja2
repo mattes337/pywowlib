@@ -1,0 +1,30 @@
+{# macros/void_zones.lua.jinja2 - Ground effect / void zone placement #}
+
+{% macro void_zone_function(boss, ability, phase) %}
+-- {{ ability.name }} ({{ ability.description }})
+function Boss.{{ ability.func_name }}(event, delay, repeats, creature)
+    {% if phase %}
+    local current_phase = creature:GetData("PHASE")
+
+    -- Only in Phase {{ phase.phase_id }}
+    if current_phase ~= {{ phase.phase_id }} then
+        return
+    end
+    {% endif %}
+
+    -- Target random player for void zone placement
+    local target = Boss.GetRandomPlayer(creature)
+    if target then
+        -- Cast visual spell at target location
+        creature:CastSpell(target, {{ ability.void_zone.visual_spell }}, false)
+    end
+
+    -- Reschedule
+    {% if ability.timer.min == ability.timer.max %}
+    creature:RegisterEvent(Boss.{{ ability.func_name }}, {{ ability.timer.min }}, 0)
+    {% else %}
+    local next_cast = math.random({{ ability.timer.min }}, {{ ability.timer.max }})
+    creature:RegisterEvent(Boss.{{ ability.func_name }}, next_cast, 0)
+    {% endif %}
+end
+{% endmacro %}

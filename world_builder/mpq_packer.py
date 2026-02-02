@@ -234,6 +234,231 @@ class MPQPacker:
         return mpq_path
 
 
+# ===========================================================================
+# MPQ Extraction -- Read from existing MPQ archives
+# ===========================================================================
+
+# Try to import the MPQ read wrapper (StormLib-based).
+_HAS_STORM = False
+try:
+    from archives.mpq import MPQFile
+    _HAS_STORM = True
+except Exception:
+    MPQFile = None
+
+
+class MPQExtractor:
+    """
+    Extract files from an existing MPQ archive.
+
+    Uses the parent library MPQFile (StormLib wrapper) for reading.
+    Provides convenience methods for listing, reading, and extracting
+    game data files such as maps and DBC files.
+    """
+
+    def __init__(self, mpq_path):
+        """
+        Open an MPQ archive for reading.
+
+        Args:
+            mpq_path: Path to the MPQ archive file.
+
+        Raises:
+            RuntimeError: If StormLib is not available.
+            FileNotFoundError: If the MPQ file does not exist.
+        """
+        if not _HAS_STORM:
+            raise RuntimeError(
+                "StormLib wrapper (archives.mpq.MPQFile) is not available. "
+                "Cannot extract MPQ archives without native StormLib bindings."
+            )
+
+        if not os.path.isfile(mpq_path):
+            raise FileNotFoundError(
+                "MPQ file not found: {}".format(mpq_path)
+            )
+
+        self.mpq_path = os.path.abspath(mpq_path)
+        self._mpq = MPQFile(self.mpq_path)
+        log.info("Opened MPQ archive: %s", self.mpq_path)
+
+    def close(self):
+        """Close the MPQ archive."""
+        if self._mpq is not None:
+            self._mpq.close()
+            self._mpq = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
+
+    def list_files(self, pattern=None):
+        """
+        List files in the MPQ archive.
+
+        Args:
+            pattern: Optional fnmatch-style glob pattern to filter results.
+                     Uses forward slashes for matching (MPQ paths are
+                     normalised). Example: ``"World/Maps/*/*.adt"``
+
+        Returns:
+            list[str]: Sorted list of file paths within the archive.
+                       Paths use forward slashes.
+        """
+        import fnmatch
+
+        names = self._mpq.namelist()
+
+        if pattern is not None:
+            # Normalise pattern separators to forward slash
+            pattern = pattern.replace("\\", "/")
+            names = [n for n in names if fnmatch.fnmatch(n, pattern)]
+
+        return sorted(names)
+
+    def read_file(self, internal_path):
+        """
+        Read a file from the MPQ archive into memory.
+
+        Args:
+            internal_path: Path within the MPQ archive.
+                           Accepts both forward and backslash separators.
+
+        Returns:
+            bytes: Raw file contents.
+
+        Raises:
+            KeyError: If the file is not found in the archive.
+        """
+        # MPQFile.read() expects backslash-separated paths internally
+        normalised = internal_path.replace("/", "\\")
+        return self._mpq.read(normalised)
+
+    def extract_file(self, internal_path, output_path):
+        """
+        Extract a single file from the MPQ archive to disk.
+
+        Args:
+            internal_path: Path within the MPQ archive.
+            output_path: Destination path on disk.
+
+        Returns:
+            str: Absolute path to the extracted file.
+
+        Raises:
+            KeyError: If the file is not found in the archive.
+        """
+        output_path = os.path.abspath(output_path)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+        data = self.read_file(internal_path)
+        with open(output_path, 'wb') as fh:
+            fh.write(data)
+
+        log.info("Extracted %s -> %s (%d bytes)",
+                 internal_path, output_path, len(data))
+        return output_path
+
+    def extract_map(self, map_name, output_dir):
+        """
+        Extract all files for a map (WDT + all ADTs).
+
+        Searches for ``World/Maps/{map_name}/{map_name}.wdt`` and all
+        matching ``{map_name}_*_*.adt`` files.
+
+        Args:
+            map_name: Map directory name (e.g. ``"Azeroth"``).
+            output_dir: Base output directory. Files are written under
+                        ``{output_dir}/World/Maps/{map_name}/``.
+
+        Returns:
+            dict: Mapping of internal MPQ path -> extracted disk path for
+                  all successfully extracted files.
+        """
+        import fnmatch
+
+        output_dir = os.path.abspath(output_dir)
+
+        # Build pattern to match map files
+        map_prefix = "World/Maps/{}/{}".format(map_name, map_name)
+        all_files = self.list_files()
+
+        extracted = {}
+
+        for internal_path in all_files:
+            normalised = internal_path.replace("\\", "/")
+            is_wdt = normalised.lower() == "{}.wdt".format(map_prefix).lower()
+            is_adt = (
+                normalised.lower().startswith(
+                    "World/Maps/{}/{}_".format(map_name, map_name).lower()
+                )
+                and normalised.lower().endswith(".adt")
+            )
+
+            if is_wdt or is_adt:
+                rel_path = normalised.replace("/", os.sep)
+                disk_path = os.path.join(output_dir, rel_path)
+                try:
+                    self.extract_file(internal_path, disk_path)
+                    extracted[internal_path] = disk_path
+                except Exception as exc:
+                    log.warning("Failed to extract %s: %s",
+                                internal_path, exc)
+
+        log.info("Extracted %d map files for '%s' to %s",
+                 len(extracted), map_name, output_dir)
+        return extracted
+
+    def extract_dbc(self, dbc_name, output_dir):
+        """
+        Extract a specific DBC file from the archive.
+
+        Searches for ``DBFilesClient/{dbc_name}.dbc`` (the .dbc extension
+        is appended automatically if not present).
+
+        Args:
+            dbc_name: DBC file name (with or without .dbc extension).
+            output_dir: Output directory. File is written under
+                        ``{output_dir}/DBFilesClient/``.
+
+        Returns:
+            str: Absolute path to the extracted DBC file.
+
+        Raises:
+            KeyError: If the DBC file is not found.
+        """
+        if not dbc_name.lower().endswith(".dbc"):
+            dbc_name = dbc_name + ".dbc"
+
+        internal_path = "DBFilesClient\\{}".format(dbc_name)
+        rel_path = os.path.join("DBFilesClient", dbc_name)
+        disk_path = os.path.join(os.path.abspath(output_dir), rel_path)
+
+        return self.extract_file(internal_path, disk_path)
+
+
+def extract_map(mpq_path, map_name, output_dir):
+    """
+    Convenience function to extract all map files from an MPQ archive.
+
+    Opens the archive, extracts WDT + all ADTs for the given map name,
+    and closes the archive.
+
+    Args:
+        mpq_path: Path to the MPQ archive.
+        map_name: Map directory name (e.g. ``"Azeroth"``).
+        output_dir: Base output directory.
+
+    Returns:
+        dict: Mapping of internal MPQ path -> extracted disk path.
+    """
+    with MPQExtractor(mpq_path) as extractor:
+        return extractor.extract_map(map_name, output_dir)
+
+
 def pack_map(output_dir, map_name, wdt_data, adt_files, dbc_files=None):
     """
     Convenience function to pack all map files into an MPQ structure.

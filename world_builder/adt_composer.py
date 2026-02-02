@@ -22,9 +22,12 @@ All chunk magics are reversed in the binary (e.g. MVER -> 'REVM').
 All multi-byte integers are little-endian.
 """
 
+import logging
 import struct
 import math
 from io import BytesIO
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -715,3 +718,213 @@ def write_adt(filepath, tile_x, tile_y, **kwargs):
     data = create_adt(tile_x, tile_y, **kwargs)
     with open(filepath, 'wb') as f:
         f.write(data)
+
+
+def _derive_tile_coords(position_x, position_y):
+    """
+    Derive tile_x and tile_y from the MCNK world position.
+
+    The MCNK position formula (from _build_mcnk) is:
+        pos_x = MAP_SIZE_MAX - (tile_y * TILE_SIZE) - (chunk_row * CHUNK_SIZE)
+        pos_y = MAP_SIZE_MAX - (tile_x * TILE_SIZE) - (chunk_col * CHUNK_SIZE)
+
+    By using chunk (0, 0) position we can reverse it:
+        tile_y = (MAP_SIZE_MAX - pos_x) / TILE_SIZE   (integer part)
+        tile_x = (MAP_SIZE_MAX - pos_y) / TILE_SIZE   (integer part)
+
+    Args:
+        position_x: MCNK position.x from chunk (0, 0).
+        position_y: MCNK position.y from chunk (0, 0).
+
+    Returns:
+        Tuple (tile_x, tile_y).
+    """
+    tile_y = int(round((MAP_SIZE_MAX - position_x) / TILE_SIZE))
+    tile_x = int(round((MAP_SIZE_MAX - position_y) / TILE_SIZE))
+    return tile_x, tile_y
+
+
+def read_adt(filepath):
+    """
+    Read an ADT binary file and extract terrain data.
+
+    Uses the parent library ADTFile to parse the binary, then
+    reconstructs data in a format compatible with create_adt().
+
+    Args:
+        filepath: Path to the ADT file (string or path-like object).
+
+    Returns:
+        dict: {
+            'tile_x': int,
+            'tile_y': int,
+            'heightmap': list of lists (129x129 float values),
+            'texture_paths': list of str,
+            'splat_map': dict mapping layer_idx to 64x64 alpha lists,
+            'area_id': int,
+            'doodad_instances': list of dict,
+            'wmo_instances': list of dict,
+            'm2_filenames': list of str,
+            'wmo_filenames': list of str,
+            'chunks': list of lists (16x16 raw MCNK data dicts),
+        }
+
+    Raises:
+        ImportError: If the parent ADTFile library is not available.
+        ValueError: If the file cannot be parsed.
+    """
+    try:
+        from ..adt_file import ADTFile
+    except (ImportError, SystemError):
+        try:
+            from adt_file import ADTFile
+        except ImportError:
+            raise ImportError(
+                "Parent library ADTFile is required for read_adt(). "
+                "Ensure adt_file.py is importable.")
+
+    log.debug("Reading ADT file: %s", filepath)
+    adt = ADTFile(filepath=filepath, highres=True)
+
+    # --- Extract texture paths from MTEX ---
+    texture_paths = []
+    if hasattr(adt.mtex, 'filenames') and hasattr(adt.mtex.filenames, 'strings'):
+        texture_paths = list(adt.mtex.filenames.strings)
+    log.debug("Found %d textures", len(texture_paths))
+
+    # --- Extract M2 filenames from MMDX ---
+    m2_filenames = []
+    if hasattr(adt.mmdx, 'filenames') and hasattr(adt.mmdx.filenames, 'strings'):
+        m2_filenames = list(adt.mmdx.filenames.strings)
+
+    # --- Extract WMO filenames from MWMO ---
+    wmo_filenames = []
+    if hasattr(adt.mwmo, 'filenames') and hasattr(adt.mwmo.filenames, 'strings'):
+        wmo_filenames = list(adt.mwmo.filenames.strings)
+
+    # --- Extract doodad instances from MDDF ---
+    doodad_instances = []
+    for inst in adt.mddf.doodad_instances:
+        doodad_instances.append({
+            'name_id': inst.name_id,
+            'unique_id': inst.unique_id,
+            'position': (inst.position.x, inst.position.y, inst.position.z),
+            'rotation': (inst.rotation.x, inst.rotation.y, inst.rotation.z),
+            'scale': inst.scale,
+            'flags': inst.flags,
+        })
+
+    # --- Extract WMO instances from MODF ---
+    wmo_instances = []
+    for inst in adt.modf.wmo_instances:
+        wmo_instances.append({
+            'name_id': inst.name_id,
+            'unique_id': inst.unique_id,
+            'position': (inst.position.x, inst.position.y, inst.position.z),
+            'rotation': (inst.rotation.x, inst.rotation.y, inst.rotation.z),
+            'extents_min': inst.extents.min if hasattr(inst.extents, 'min') else (0, 0, 0),
+            'extents_max': inst.extents.max if hasattr(inst.extents, 'max') else (0, 0, 0),
+            'flags': inst.flags,
+            'doodad_set': inst.doodad_set,
+            'name_set': inst.name_set,
+            'scale': inst.scale,
+        })
+
+    # --- Process 16x16 MCNK grid ---
+    # Build the 129x129 heightmap from the outer 9x9 vertices of each chunk
+    heightmap = [[0.0] * 129 for _ in range(129)]
+    chunks = [[None for _ in range(_CHUNKS_PER_SIDE)] for _ in range(_CHUNKS_PER_SIDE)]
+    splat_map = {}
+    area_id = 0
+    tile_x = 0
+    tile_y = 0
+
+    # Derive tile coordinates from chunk (0, 0) position
+    chunk_00 = adt.mcnk[0][0]
+    pos = chunk_00.position
+    tile_x, tile_y = _derive_tile_coords(pos.x, pos.y)
+    area_id = chunk_00.area_id
+    log.debug("Derived tile coords: (%d, %d)", tile_x, tile_y)
+
+    for chunk_row in range(_CHUNKS_PER_SIDE):
+        for chunk_col in range(_CHUNKS_PER_SIDE):
+            mcnk = adt.mcnk[chunk_row][chunk_col]
+
+            # Extract raw MCNK data for the chunks grid
+            chunk_data = {
+                'flags': mcnk.flags,
+                'index_x': mcnk.index_x,
+                'index_y': mcnk.index_y,
+                'n_layers': mcnk.n_layers,
+                'area_id': mcnk.area_id,
+                'position': (mcnk.position.x, mcnk.position.y, mcnk.position.z),
+                'holes_low_res': mcnk.holes_low_res,
+            }
+            chunks[chunk_row][chunk_col] = chunk_data
+
+            # Use area_id from first chunk as default
+            if chunk_row == 0 and chunk_col == 0:
+                area_id = mcnk.area_id
+
+            # --- Reconstruct heightmap from MCVT ---
+            # MCVT contains 145 height values: 9 outer rows interleaved
+            # with 8 inner rows. We extract only the outer 9x9 vertices
+            # to build the 129x129 tile heightmap.
+            heights_145 = mcnk.mcvt.height
+            # The interleaved layout:
+            #   row 0: 9 outer (indices 0..8)
+            #   row 1: 8 inner (indices 9..16)
+            #   row 2: 9 outer (indices 17..25)
+            #   ...
+            #   row 16: 9 outer (indices 136..144)
+            # Outer rows are at interleaved_row indices 0, 2, 4, ..., 16
+            idx = 0
+            for interleaved_row in range(17):
+                if interleaved_row % 2 == 0:
+                    # Outer row: 9 vertices
+                    outer_row_idx = interleaved_row // 2
+                    global_row = chunk_row * 8 + outer_row_idx
+                    for col_idx in range(_OUTER_STRIDE):
+                        global_col = chunk_col * 8 + col_idx
+                        if global_row < 129 and global_col < 129:
+                            heightmap[global_row][global_col] = heights_145[idx]
+                        idx += 1
+                else:
+                    # Inner row: 8 vertices, skip them for heightmap
+                    idx += _INNER_STRIDE
+
+            # --- Extract alpha maps from MCAL ---
+            # Each MCAL layer corresponds to texture layers 1+ (layer 0 has
+            # no alpha map). The alpha_map is a 64x64 list-of-lists.
+            for layer_idx, mcal_layer in enumerate(mcnk.mcal.layers):
+                alpha_2d = mcal_layer.alpha_map
+                # Store per-chunk alpha data keyed by (layer_idx+1, chunk_row, chunk_col)
+                # We aggregate into the splat_map using a composite key
+                key = (layer_idx + 1, chunk_row, chunk_col)
+                splat_map[key] = alpha_2d
+
+    # Reorganize splat_map: group by layer index
+    # The create_adt() splat_map expects: {layer_idx: [[64][64]]} applied
+    # uniformly to all chunks. Since real ADTs have per-chunk alpha maps,
+    # we return the raw per-chunk data as a nested dict instead.
+    reorganized_splat = {}
+    for (layer_idx, crow, ccol), alpha_data in splat_map.items():
+        if layer_idx not in reorganized_splat:
+            reorganized_splat[layer_idx] = {}
+        reorganized_splat[layer_idx][(crow, ccol)] = alpha_data
+
+    log.debug("Extracted %d alpha map layers", len(reorganized_splat))
+
+    return {
+        'tile_x': tile_x,
+        'tile_y': tile_y,
+        'heightmap': heightmap,
+        'texture_paths': texture_paths,
+        'splat_map': reorganized_splat,
+        'area_id': area_id,
+        'doodad_instances': doodad_instances,
+        'wmo_instances': wmo_instances,
+        'm2_filenames': m2_filenames,
+        'wmo_filenames': wmo_filenames,
+        'chunks': chunks,
+    }
