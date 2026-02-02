@@ -24,8 +24,7 @@ from .dungeon_builder import build_dungeon
 from .dbc_injector import (DBCInjector, register_map, register_area,
                            register_world_map_area, register_world_map_overlay)
 from .mpq_packer import MPQPacker
-from .intermediate_format import load_json, FORMAT_VERSION, IDAllocator
-from .intermediate_format import TileImageReader
+from .intermediate_format import load_json, FORMAT_VERSION, IDAllocator, TileImageReader
 
 log = logging.getLogger(__name__)
 
@@ -448,14 +447,10 @@ class ZoneImporter:
 
     def _load_tile(self, tile_path):
         """
-        Load tile data from either image format (directory) or legacy JSON.
-
-        If tile_path is a directory containing meta.json, reads using
-        TileImageReader. If it's a JSON file, loads directly. Returns
-        None if the tile cannot be found.
+        Load tile data from a tile image directory (PNG + meta.json).
 
         Args:
-            tile_path: Path to either a tile directory or a .json file.
+            tile_path: Path to a tile directory containing meta.json and PNGs.
 
         Returns:
             dict: Tile data dict, or None if not found.
@@ -467,9 +462,6 @@ class ZoneImporter:
                 return reader.to_tile_json()
             log.warning("Tile directory has no meta.json: %s", tile_path)
             return None
-
-        if os.path.isfile(tile_path):
-            return load_json(tile_path)
 
         return None
 
