@@ -31,30 +31,30 @@ the current `pywowlib` `world_builder` module.
 
 | # | Use Case | Automation | pywowlib Coverage | External Tools Required | Integration Candidate |
 |---|----------|-----------|-------------------|------------------------|-----------------------|
-| 1 | [Add New Zone](#1-add-new-zone-exterior) | Full Auto | Mostly | vmap/mmap generators | Yes |
-| 2 | [Add New Dungeon](#2-add-new-dungeon-instance) | Full Auto | Mostly | vmap/mmap generators | Yes |
-| 3 | [Update Zone Scenery](#3-update-zone-scenery) | AI-Assisted | Mostly | Noggit (visual placement) | No |
-| 4 | [Add Custom Music](#4-add-custom-music) | Full Auto | Partial | Audio creation tools | Partial |
+| 1 | [Add New Zone](#1-add-new-zone-exterior) | Full Auto | Complete | -- | -- |
+| 2 | [Add New Dungeon](#2-add-new-dungeon-instance) | Full Auto | Complete | -- | -- |
+| 3 | [Update Zone Scenery](#3-update-zone-scenery) | AI-Assisted | Complete | Noggit (visual placement) | No |
+| 4 | [Add Custom Music](#4-add-custom-music) | Full Auto | Complete | Audio creation tools | -- |
 | 5 | [Change Loading Screen](#5-change-loading-screen) | Full Auto | Complete | Image editing (optional) | No |
-| 6 | [Add New Spell](#6-add-new-spell) | Semi-Auto | Partial | -- | Yes |
-| 7 | [Change Spell Data](#7-change-spell-data) | AI-Assisted | Partial | -- | Yes |
-| 8 | [Modify Talent Tree](#8-modify-talent-tree) | Semi-Auto | Minimal | -- | Yes |
-| 9 | [Change Racial Traits](#9-change-racial-traits) | Semi-Auto | Partial | -- | Yes |
+| 6 | [Add New Spell](#6-add-new-spell) | Full Auto | Complete | -- | -- |
+| 7 | [Change Spell Data](#7-change-spell-data) | Full Auto | Complete | -- | -- |
+| 8 | [Modify Talent Tree](#8-modify-talent-tree) | Full Auto | Complete | -- | -- |
+| 9 | [Change Racial Traits](#9-change-racial-traits) | Full Auto | Complete | -- | -- |
 | 10 | [Add New Class](#10-add-new-class) | Not Feasible | Minimal | C++ core rewrite | No |
-| 11 | [Add New Item](#11-add-new-item) | Semi-Auto | Partial | 3D modeling (custom models) | Partial |
-| 12 | [Create Item Set](#12-create-item-set) | AI-Assisted | Partial | -- | Yes |
+| 11 | [Add New Item](#11-add-new-item) | Full Auto | Mostly | 3D modeling (custom models) | -- |
+| 12 | [Create Item Set](#12-create-item-set) | Full Auto | Complete | -- | -- |
 | 13 | [Modify Loot Tables](#13-modify-loot-tables) | Full Auto | Complete | -- | -- |
-| 14 | [Custom Crafting Recipe](#14-custom-crafting-recipe) | Semi-Auto | Partial | -- | Yes |
-| 15 | [Add New Creature](#15-add-new-creature) | Full Auto* | Mostly* | 3D modeling (custom models) | Partial |
-| 16 | [Update Boss Mechanics](#16-update-boss-mechanics) | Full Auto | Mostly | C++ scripting (non-Eluna) | No |
+| 14 | [Custom Crafting Recipe](#14-custom-crafting-recipe) | Full Auto | Complete | -- | -- |
+| 15 | [Add New Creature](#15-add-new-creature) | Full Auto | Complete | 3D modeling (custom models) | -- |
+| 16 | [Update Boss Mechanics](#16-update-boss-mechanics) | Full Auto | Complete | C++ scripting (non-Eluna) | No |
 | 17 | [Add Vendor/Trainer](#17-add-vendortrainer) | Full Auto | Complete | -- | -- |
 | 18 | [Change NPC Pathing](#18-change-npc-pathing) | Full Auto | Complete | -- | -- |
 | 19 | [Add New Quest](#19-add-new-quest) | Full Auto | Complete | -- | -- |
 | 20 | [Create Quest Chain](#20-create-quest-chain) | Full Auto | Complete | -- | -- |
-| 21 | [Add Object Interaction](#21-add-object-interaction) | AI-Assisted | Mostly | 3D modeling (custom models) | Partial |
+| 21 | [Add Object Interaction](#21-add-object-interaction) | Full Auto | Complete | 3D modeling (custom models) | -- |
 | 22 | [Custom Teleporter](#22-custom-teleporter) | Full Auto | Complete | -- | -- |
 | 23 | [Add Playable Race](#23-add-playable-race) | Not Feasible | Minimal | C++ core, M2 mass editing | No |
-| 24 | [Custom UI Frame](#24-custom-ui-frame) | AI-Assisted | None | -- | Yes |
+| 24 | [Custom UI Frame](#24-custom-ui-frame) | Full Auto | Complete | -- | -- |
 | 25 | [Modify Flight Paths](#25-modify-flight-paths) | Full Auto | Complete | -- | -- |
 
 \* When reusing existing models. Custom models require external 3D tools.
@@ -69,14 +69,15 @@ the current `pywowlib` `world_builder` module.
 
 **File:** [`01_world_building_environment/add_new_zone.md`](01_world_building_environment/add_new_zone.md)
 
-**Automation: Full Auto** | **pywowlib: Mostly Complete**
+**Automation: Full Auto** | **pywowlib: Complete**
 
 The high-level `build_zone()` function orchestrates the entire pipeline: DBC
 registration (`Map.dbc`, `AreaTable.dbc`, `WorldMapArea.dbc`, `LoadingScreens.dbc`),
 WDT generation, ADT creation with heightmaps and texture splatting, artwork
 generation (world maps, loading screens, minimaps), and MPQ packing. The
 `TerrainSculptor` can generate procedural terrain with noise, primitives, texture
-painting, and doodad scattering.
+painting, and doodad scattering. `generate_vmaps()` / `generate_mmaps()` handle
+server-side collision and pathing generation via subprocess integration.
 
 **What pywowlib covers:**
 - `build_zone()` -- full end-to-end pipeline
@@ -86,24 +87,23 @@ painting, and doodad scattering.
 - `artwork_pipeline` -- world maps, loading screens, subzone overlays
 - `MPQPacker` -- client patch assembly
 - `SQLGenerator.add_zone()` -- server-side zone registration
+- `generate_vmaps()` / `generate_mmaps()` / `generate_server_data()` -- server collision and pathing via subprocess
 
-**Gap: Server-side collision and pathing.**
-The WoW server needs `.vmap` and `.mmap` files for line-of-sight and NPC navigation.
-These are generated by `vmap4extractor` + `vmap4assembler` + `mmaps_generator` from
-the AzerothCore/TrinityCore toolchain, which read the client terrain files and
-produce server-side navigation meshes.
+**Note:** The vmap/mmap tools (`vmap4_extractor`, `vmap4_assembler`, `mmaps_generator`)
+must be built from AzerothCore/TrinityCore source. A Docker build is provided in
+`tools/extractors/Dockerfile` for building these tools from a local AC repo.
 
 **External tools:**
 | Tool | Purpose | Integrate into pywowlib? |
 |------|---------|--------------------------|
-| `vmap4extractor` + `vmap4assembler` | Server collision (LoS) | **Yes** -- call as subprocess after ADT/WMO generation. Add `generate_vmaps(map_name, client_dir, output_dir)` to world_builder |
-| `mmaps_generator` | Server NPC pathing (Recast/Detour) | **Yes** -- call as subprocess. Add `generate_mmaps(map_name, vmap_dir, output_dir)` |
+| `vmap4_extractor` + `vmap4_assembler` | Server collision (LoS) | **Done** -- `generate_vmaps()` wraps as subprocess |
+| `mmaps_generator` | Server NPC pathing (Recast/Detour) | **Done** -- `generate_mmaps()` wraps as subprocess |
 | Noggit | Visual terrain editing | **No** -- full GUI application, orthogonal to headless pipeline |
 
 **AI agent opportunity:** An AI agent can fully automate zone creation by:
 generating a zone definition from a text description, calling `TerrainSculptor` to
-produce terrain, running `build_zone()`, and optionally triggering vmap/mmap
-generation.
+produce terrain, running `build_zone()`, and triggering vmap/mmap generation via
+`generate_server_data()`.
 
 ---
 
@@ -111,7 +111,7 @@ generation.
 
 **File:** [`01_world_building_environment/add_new_dungeon.md`](01_world_building_environment/add_new_dungeon.md)
 
-**Automation: Full Auto** | **pywowlib: Mostly Complete**
+**Automation: Full Auto** | **pywowlib: Complete**
 
 `build_dungeon()` generates WMO root + group files from room primitives
 (`BoxRoom`, `CircularRoom`, `Corridor`, `SpiralRamp`, `ChamberRoom`), registers
@@ -119,7 +119,8 @@ all DBC entries (`Map.dbc` with `instance_type=1`, `AreaTable.dbc`,
 `DungeonEncounter.dbc`, `LFGDungeons.dbc`, `AreaTrigger.dbc`, `LoadingScreens.dbc`),
 generates spawn coordinates, and packs into MPQ. `ScriptGenerator` produces Eluna
 Lua scripts for boss encounters with multi-phase logic, timers, and add spawning.
-`SQLGenerator` handles all server-side tables.
+`SQLGenerator` handles all server-side tables. Server collision/pathing is handled
+by `generate_vmaps()` / `generate_mmaps()`.
 
 **What pywowlib covers:**
 - `build_dungeon()` -- WMO geometry + DBC + MPQ pipeline
@@ -129,14 +130,14 @@ Lua scripts for boss encounters with multi-phase logic, timers, and add spawning
 - `SpellRegistry` -- boss ability ID management
 - `SQLGenerator.add_dungeon()` -- instance_template, access_requirement
 - `export_spawn_coordinates()` -- NPC/boss placement
+- `generate_vmaps()` / `generate_mmaps()` -- server collision and pathing via subprocess
 
-**Gap: Same vmap/mmap gap as zones.** Also, servers using C++ `InstanceScript`
-instead of Eluna need manual scripting.
+**Note:** Servers using C++ `InstanceScript` instead of Eluna need manual scripting.
 
 **External tools:**
 | Tool | Purpose | Integrate? |
 |------|---------|------------|
-| vmap/mmap generators | Server collision/pathing | **Yes** (same as zones) |
+| vmap/mmap generators | Server collision/pathing | **Done** -- subprocess wrappers in `vmap_generator.py` |
 | C++ compiler | Non-Eluna instance scripts | **No** -- different paradigm, out of scope |
 
 **AI agent opportunity:** Dungeon layout design from text descriptions, encounter
@@ -148,13 +149,14 @@ scripting from boss ability descriptions, full end-to-end generation.
 
 **File:** [`01_world_building_environment/update_zone_scenery.md`](01_world_building_environment/update_zone_scenery.md)
 
-**Automation: AI-Assisted** | **pywowlib: Mostly Complete**
+**Automation: AI-Assisted** | **pywowlib: Complete**
 
 `read_adt()` parses existing terrain into editable Python structures (heightmaps,
 textures, splat maps, doodad/WMO instances). Modifications are applied
-programmatically and written back with `create_adt()`. `MPQExtractor` reads from
-existing archives, `MPQPacker` rebuilds patches. `import_heightmap_from_adt()` and
-`import_texture_rules_from_adt()` support reverse-engineering existing terrain.
+programmatically and written back with `create_adt()`. `add_doodad_to_adt()` and
+`add_wmo_to_adt()` insert objects into existing ADT binary data with full chunk
+rebuilding (MMDX/MMID/MDDF for doodads, MWMO/MWID/MODF for WMOs). `MPQExtractor`
+reads from existing archives, `MPQPacker` rebuilds patches.
 
 **What pywowlib covers:**
 - `MPQExtractor` -- read existing MPQ archives
@@ -162,27 +164,21 @@ existing archives, `MPQPacker` rebuilds patches. `import_heightmap_from_adt()` a
 - `import_heightmap_from_adt()` / `import_texture_rules_from_adt()` -- extraction
 - `TerrainSculptor` primitives -- apply modifications to heightmaps
 - `create_adt()` -- write modified terrain back
+- `add_doodad_to_adt()` -- insert M2 doodads into existing ADT (modifies MMDX/MMID/MDDF, rebuilds MHDR/MCIN)
+- `add_wmo_to_adt()` -- insert WMO buildings into existing ADT (modifies MWMO/MWID/MODF, rebuilds MHDR/MCIN)
 - `MPQPacker` -- repack into client patch
 
-**Gap: Visual object placement.** Placing doodads (`.m2` trees, rocks) and WMOs
-(buildings) at specific world coordinates requires knowing their positions in 3D
-space. pywowlib can write placement data (`MDDF`/`MODF` chunks in ADT) but has no
-visual preview for choosing positions.
+**Note:** Visual object placement still requires knowing 3D coordinates. pywowlib
+provides the API for coordinate-based insertion but has no visual preview.
 
 **External tools:**
 | Tool | Purpose | Integrate? |
 |------|---------|------------|
 | Noggit | Visual doodad/WMO placement | **No** -- full 3D editor, orthogonal to headless API |
 
-**Integration opportunity:** Add coordinate-based `add_doodad_to_adt(adt_data,
-m2_path, position, rotation, scale)` and `add_wmo_to_adt(adt_data, wmo_path,
-position, rotation)` convenience functions. The `DoodadScatterEngine` and
-`WMOPlacementEngine` in `terrain_sculptor.py` already do this for new terrain but
-lack an API for modifying existing ADTs.
-
 **AI agent opportunity:** An AI agent can interpret descriptions like "make Elwynn
 Forest darker" by adjusting texture layers, modifying lighting via `register_light()`,
-and swapping texture paths in ADT data.
+swapping texture paths, and inserting/removing doodads and WMOs via the new ADT APIs.
 
 ---
 
@@ -190,34 +186,33 @@ and swapping texture paths in ADT data.
 
 **File:** [`01_world_building_environment/add_custom_music.md`](01_world_building_environment/add_custom_music.md)
 
-**Automation: Full Auto** | **pywowlib: Partial**
+**Automation: Full Auto** | **pywowlib: Complete**
 
 `register_zone_music()` creates `ZoneMusic.dbc` entries,
 `register_sound_ambience()` creates `SoundAmbience.dbc` entries, and
 `update_area_atmosphere()` links them to zones in `AreaTable.dbc`.
-`MPQPacker` handles file placement.
+`register_sound_entry()` creates `SoundEntries.dbc` records (30 fields, 120 bytes)
+with up to 10 sound files per entry. `register_zone_intro_music()` creates
+`ZoneIntroMusicTable.dbc` entries for zone entrance stingers. `MPQPacker` handles
+file placement.
 
 **What pywowlib covers:**
 - `register_zone_music()` -- ZoneMusic.dbc (8 fields, 32 bytes)
 - `register_sound_ambience()` -- SoundAmbience.dbc (3 fields, 12 bytes)
+- `register_sound_entry()` -- SoundEntries.dbc (30 fields, 120 bytes)
+- `register_zone_intro_music()` -- ZoneIntroMusicTable.dbc (5 fields, 20 bytes)
 - `update_area_atmosphere()` -- link music/ambience to AreaTable
 - `register_light()` -- Light.dbc for atmosphere
 - `MPQPacker.add_file()` -- place MP3 files in MPQ
-
-**Gap: `SoundEntries.dbc` has no convenience wrapper.** ZoneMusic and
-SoundAmbience reference `SoundEntries.dbc` IDs, but creating new sound entries
-requires manually constructing 31-field records via the low-level `DBCInjector`.
-Also, `ZoneIntroMusicTable.dbc` for zone entrance stingers has no wrapper.
 
 **External tools:**
 | Tool | Purpose | Integrate? |
 |------|---------|------------|
 | Audio creation (Audacity, etc.) | Create MP3 files | **No** -- creative tool, out of scope |
-| `SoundEntries.dbc` schema | Register new sound entries | **Yes** -- add `register_sound_entry()` convenience wrapper |
-| `ZoneIntroMusicTable.dbc` schema | Zone entrance music stingers | **Yes** -- add `register_zone_intro_music()` |
 
 **AI agent opportunity:** Fully automatable given existing audio files. AI selects
-tracks, assigns them to zones, and generates all DBC entries.
+tracks, assigns them to zones, and generates all DBC entries including sound entries
+and zone intro stingers.
 
 ---
 
@@ -254,37 +249,37 @@ screens, convert formats, register DBC entries, and pack MPQ in one pass.
 
 **File:** [`02_combat_classes_spells/add_new_spell.md`](02_combat_classes_spells/add_new_spell.md)
 
-**Automation: Semi-Auto** | **pywowlib: Partial**
+**Automation: Full Auto** | **pywowlib: Complete**
 
-`SpellRegistry` manages spell ID allocation (base 90000+) with name-to-ID
-mapping, Lua/JSON export, and import. However, actually writing `Spell.dbc`
-records (234+ fields) requires manual byte packing via the low-level
-`DBCInjector`.
+`register_spell()` creates complete `Spell.dbc` records (234 fields, 936 bytes)
+with named parameters for all commonly-used fields: name, description, school,
+cast time, cooldown, range, effects, mana cost, icon, and more. Dict-based field
+mapping handles the full 234-field layout. `register_spell_icon()` creates
+`SpellIcon.dbc` entries for icon texture assignment. `SpellRegistry` manages ID
+allocation with Lua/JSON export.
 
 **What pywowlib covers:**
+- `register_spell()` -- Spell.dbc (234 fields, 936 bytes) with named parameters
+- `modify_spell()` -- modify existing spell records by field name
+- `register_spell_icon()` -- SpellIcon.dbc (2 fields, 8 bytes)
 - `SpellRegistry` -- ID allocation, name tracking, Lua/JSON export
 - `DBCInjector` (low-level) -- can read/write any DBC including Spell.dbc
 - `SQLGenerator` -- server-side `spell_linked_spell`, `spell_bonus_data`
 - `ScriptGenerator` -- Eluna Lua for custom spell handlers
 
-**Gap: No `Spell.dbc` convenience wrapper.** Spell.dbc has 234 fields (936 bytes
-per record) covering mechanics, visuals, targeting, costs, cooldowns, and effects.
-Constructing records manually is error-prone. Also missing:
-- `SpellIcon.dbc` -- spell icon assignment (no schema)
-- `SpellVisual.dbc` -- spell visual effects (no schema)
+**Remaining gaps:**
+- `SpellVisual.dbc` -- spell visual effects (no schema; reuse existing visual IDs)
 - `SpellVisualKit.dbc` -- visual kit composition (no schema)
 
 **External tools:**
 | Tool | Purpose | Integrate? |
 |------|---------|------------|
-| `Spell.dbc` schema | Spell creation | **Yes -- high priority.** Add `register_spell_dbc(dbc_dir, spell_def)` with named fields for the most-used subset (name, school, cast_time, cooldown, range, effects, icon, mana_cost, description) |
-| `SpellIcon.dbc` schema | Icon assignment | **Yes** -- small DBC, simple schema |
-| `SpellVisual.dbc` schema | Visual effects | **Yes** -- useful but large schema; start with reuse of existing visual IDs |
+| `SpellVisual.dbc` schema | Visual effects | Low priority -- reuse existing visual IDs for now |
 | Server C++ | Custom spell mechanics | **No** -- requires core modification |
 
-**AI agent opportunity:** An AI agent could design spell parameters (damage, cost,
-cooldown, effect type) from a text description, but currently needs manual DBC byte
-packing. With a `Spell.dbc` wrapper this becomes fully automatable.
+**AI agent opportunity:** Fully automatable. An AI agent can design spell parameters
+(damage, cost, cooldown, effect type) from a text description and generate all DBC
+entries via `register_spell()` and `register_spell_icon()`.
 
 ---
 
@@ -292,26 +287,24 @@ packing. With a `Spell.dbc` wrapper this becomes fully automatable.
 
 **File:** [`02_combat_classes_spells/change_spell_data.md`](02_combat_classes_spells/change_spell_data.md)
 
-**Automation: AI-Assisted** | **pywowlib: Partial**
+**Automation: Full Auto** | **pywowlib: Complete**
 
-Modifying existing spell records (damage, mana cost, cast time, range, cooldown)
-is conceptually simple but faces the same `Spell.dbc` schema gap. The low-level
-`DBCInjector.get_record_field()` and direct byte manipulation work but require
-knowing exact field offsets.
+`modify_spell()` modifies existing spell records using named fields (e.g.,
+`modify_spell(dbc_dir, 133, ManaCost=200, CooldownTime=5000)`). The full
+234-field map provides named access to every field in the WotLK 3.3.5 Spell.dbc
+layout.
 
 **What pywowlib covers:**
+- `modify_spell()` -- modify any spell field by name (ManaCost, CooldownTime, Duration, Range, etc.)
+- `register_spell()` -- create new spells with named parameters
 - `DBCInjector` (low-level) -- read existing Spell.dbc, modify fields by offset
 - `SQLGenerator` -- `spell_bonus_data`, `spell_custom_attr` for server-side overrides
 
-**Gap:** Same as Add New Spell -- no named-field access to `Spell.dbc`.
+**External tools:** None.
 
-**External tools:** Same as #6. A `Spell.dbc` schema wrapper would make this
-**Full Auto**.
-
-**AI agent opportunity:** Highly suitable. An AI agent could implement balance
-changes ("buff Fireball by 10%") by reading the current value at a known field
-offset, computing the new value, and writing it back. With a schema wrapper, this
-becomes trivial.
+**AI agent opportunity:** Fully automatable. An AI agent can implement balance
+changes ("buff Fireball by 10%") by reading the current ManaCost/damage values
+and writing updated values via `modify_spell()`.
 
 ---
 
@@ -319,32 +312,29 @@ becomes trivial.
 
 **File:** [`02_combat_classes_spells/modify_talent_tree.md`](02_combat_classes_spells/modify_talent_tree.md)
 
-**Automation: Semi-Auto** | **pywowlib: Minimal**
+**Automation: Full Auto** | **pywowlib: Complete**
 
-Talent trees involve `Talent.dbc` (position, tier, column, prerequisite arrows,
-spell ranks) and `TalentTab.dbc` (tab background texture, class mask, order).
-Neither has a convenience wrapper.
+`register_talent()` creates `Talent.dbc` records (23 fields, 92 bytes) with tier,
+column, spell rank IDs, and prerequisite talent linking. `register_talent_tab()`
+creates `TalentTab.dbc` records (24 fields, 96 bytes) with class mask, background
+texture, and tab ordering. Combined with `register_spell()` for talent effect
+spells, complete talent trees can be generated programmatically.
 
 **What pywowlib covers:**
-- `DBCInjector` (low-level) -- can read/write Talent.dbc and TalentTab.dbc
+- `register_talent()` -- Talent.dbc (23 fields, 92 bytes) with tier, column, rank spells, prerequisites
+- `register_talent_tab()` -- TalentTab.dbc (24 fields, 96 bytes) with class mask, texture, order
+- `register_spell()` -- talent effect spells (Spell.dbc)
 - `SpellRegistry` -- track talent spell IDs
 
-**Gap:** No `Talent.dbc` schema (20+ fields including rank spell IDs and
-prerequisite talent IDs). No `TalentTab.dbc` schema. Talent tree arrow rendering
-depends on precise tier/column/prerequisite configuration that the UI interprets
-client-side -- misconfigurations cause visual breaks.
+**Note:** Talent tree arrow rendering depends on precise tier/column/prerequisite
+configuration. Misconfigurations cause visual breaks in the client UI.
 
-**External tools:**
-| Tool | Purpose | Integrate? |
-|------|---------|------------|
-| `Talent.dbc` schema | Talent position and prerequisites | **Yes** -- add `register_talent()` with tier, column, rank_spells, prereq_talent |
-| `TalentTab.dbc` schema | Tab definition | **Yes** -- add `register_talent_tab()` with class_mask, texture, order |
-| Spell.dbc schema | Talent effect spells | **Yes** (same as #6) |
+**External tools:** None.
 
 **AI agent opportunity:** Talent tree design is highly structured (tier/column grid
-with prerequisite arrows). An AI agent could generate valid trees from descriptions,
-but the UI fragility makes validation critical. A `validate_talent_tree()` function
-would be valuable.
+with prerequisite arrows). An AI agent can generate valid trees from descriptions,
+creating all talent, tab, and spell entries. A `validate_talent_tree()` function
+would be a valuable future addition.
 
 ---
 
@@ -352,24 +342,20 @@ would be valuable.
 
 **File:** [`02_combat_classes_spells/change_racial_traits.md`](02_combat_classes_spells/change_racial_traits.md)
 
-**Automation: Semi-Auto** | **pywowlib: Partial**
+**Automation: Full Auto** | **pywowlib: Complete**
 
-Racial traits are spells auto-learned via `SkillLineAbility.dbc`. Changing them
-requires modifying `Spell.dbc` (the passive effect) and `SkillLineAbility.dbc`
-(the auto-learn trigger).
+Racial traits are spells auto-learned via `SkillLineAbility.dbc`. `register_spell()`
+creates the racial passive spell, and `register_skill_line_ability()` links it to
+a skill line for auto-learning at the appropriate level/race.
 
 **What pywowlib covers:**
-- `DBCInjector` (low-level) -- read/write both DBCs
+- `register_spell()` -- racial passive spells (Spell.dbc, 234 fields)
+- `modify_spell()` -- modify existing racial spells
+- `register_skill_line_ability()` -- SkillLineAbility.dbc (14 fields, 56 bytes) auto-learn configuration
 - `SpellRegistry` -- track new racial spell IDs
 - `SQLGenerator` -- `player_levelstats` for base stat changes
 
-**Gap:** No `SkillLineAbility.dbc` schema. No `Spell.dbc` convenience wrapper.
-
-**External tools:**
-| Tool | Purpose | Integrate? |
-|------|---------|------------|
-| `SkillLineAbility.dbc` schema | Auto-learn configuration | **Yes** -- add `register_skill_line_ability()` |
-| `Spell.dbc` schema | Racial passive spell | **Yes** (same as #6) |
+**External tools:** None.
 
 ---
 
@@ -403,30 +389,28 @@ integrating** -- the recommendation is to reskin/replace an existing class.
 
 **File:** [`03_armory_items_loot/add_new_item.md`](03_armory_items_loot/add_new_item.md)
 
-**Automation: Semi-Auto** | **pywowlib: Partial**
+**Automation: Full Auto** | **pywowlib: Mostly Complete**
 
-`SQLGenerator.add_item()` generates complete `item_template` INSERT statements
-with all columns (stats, class, subclass, quality, bonding, etc.). Client-side
-requires `Item.dbc` (visual/sound link) and `ItemDisplayInfo.dbc` (model/texture
-reference).
+`register_item()` creates `Item.dbc` records (8 fields, 32 bytes) with class,
+subclass, material, display info, and inventory type. `SQLGenerator.add_item()`
+generates complete `item_template` INSERT statements with all stat columns.
 
 **What pywowlib covers:**
+- `register_item()` -- Item.dbc (8 fields, 32 bytes) client-side item registration
 - `SQLGenerator.add_item()` -- full `item_template` with all stat fields
 - `SQLGenerator.add_loot()` -- loot table entries
 - `MPQPacker` -- pack custom M2/BLP models
 - `blp_converter` -- texture conversion
 
-**Gap:** No `Item.dbc` schema (6 fields: ID, ClassID, SubclassID, SoundOverrideSubclassID,
-Material, DisplayInfoID, InventoryType). No `ItemDisplayInfo.dbc` schema (model paths,
-texture paths, geoset groups, visual effects).
+**Remaining gap:** No `ItemDisplayInfo.dbc` schema (model paths, texture paths,
+geoset groups, visual effects). Not needed when reusing existing display IDs
+(which covers the vast majority of use cases).
 
 **External tools:**
 | Tool | Purpose | Integrate? |
 |------|---------|------------|
-| `Item.dbc` schema | Client item registration | **Yes** -- add `register_item_dbc()`. Small schema (7 fields, 28 bytes) |
-| `ItemDisplayInfo.dbc` schema | Visual/model link | **Yes** -- add `register_item_display()`. Medium schema (26 fields) |
+| `ItemDisplayInfo.dbc` schema | Visual/model link | Low priority -- existing display IDs cover most needs |
 | 3D modeling (Blender + M2 export) | Custom weapon/armor models | **No** -- creative tooling, out of scope |
-| Existing display ID reuse | Use retail models | N/A -- no tool needed, just reference existing IDs |
 
 **AI agent opportunity:** Fully automatable for items using existing display IDs
 (which covers most cases -- recolored existing models). Custom models remain manual.
@@ -437,26 +421,23 @@ texture paths, geoset groups, visual effects).
 
 **File:** [`03_armory_items_loot/create_item_set.md`](03_armory_items_loot/create_item_set.md)
 
-**Automation: AI-Assisted** | **pywowlib: Partial**
+**Automation: Full Auto** | **pywowlib: Complete**
 
-Item sets are defined in `ItemSet.dbc` (set name, item IDs, set spell bonuses at
-2/3/4/5/6/7/8 piece thresholds). Server reads this DBC for bonus application.
+`register_item_set()` creates `ItemSet.dbc` records (53 fields, 212 bytes) with
+set name, up to 17 item IDs, up to 8 set bonus spells with piece-count thresholds,
+and optional skill requirements. Combined with `register_item()` and
+`SQLGenerator.add_item()`, complete tier sets can be generated end-to-end.
 
 **What pywowlib covers:**
+- `register_item_set()` -- ItemSet.dbc (53 fields, 212 bytes) with item IDs, bonus spells, thresholds
+- `register_item()` -- Item.dbc for individual set pieces
 - `SQLGenerator.add_item()` -- items with `itemset` field in `item_template`
-- `DBCInjector` (low-level) -- can read/write ItemSet.dbc
 
-**Gap:** No `ItemSet.dbc` convenience wrapper. The schema is moderate complexity:
-ID, name (locstring), items[17] (up to 17 item IDs), spells[8] (bonus spell IDs),
-thresholds[8] (piece count triggers), required_skill, required_skill_rank.
+**External tools:** None.
 
-**External tools:**
-| Tool | Purpose | Integrate? |
-|------|---------|------------|
-| `ItemSet.dbc` schema | Set bonus definition | **Yes** -- add `register_item_set()` with item_ids, bonus_spells, thresholds |
-
-**AI agent opportunity:** An AI agent could design tier sets with stat-appropriate
-bonuses, generate all DBC entries, and create the matching items.
+**AI agent opportunity:** Fully automatable. An AI agent can design tier sets with
+stat-appropriate bonuses, generate all DBC and SQL entries for both the set and
+its individual items.
 
 ---
 
@@ -487,22 +468,22 @@ loot across tiers, and generate all SQL.
 
 **File:** [`03_armory_items_loot/custom_crafting_recipe.md`](03_armory_items_loot/custom_crafting_recipe.md)
 
-**Automation: Semi-Auto** | **pywowlib: Partial**
+**Automation: Full Auto** | **pywowlib: Complete**
 
 A crafting recipe is a "spell" (the craft action) linked to a "skill line"
-(profession) that produces an "item" (the output). Requires `Spell.dbc` (craft
-spell with SPELL_EFFECT_CREATE_ITEM), `SkillLineAbility.dbc` (link to profession),
-and `item_template` (reagents and result).
+(profession) that produces an "item" (the output). `register_spell()` creates the
+craft spell with SPELL_EFFECT_CREATE_ITEM, `register_skill_line_ability()` links
+it to the profession skill line, and `SQLGenerator.add_item()` creates the crafted
+item and reagents.
 
 **What pywowlib covers:**
+- `register_spell()` -- Spell.dbc craft spell (234 fields, 936 bytes)
+- `register_skill_line_ability()` -- SkillLineAbility.dbc profession link (14 fields, 56 bytes)
+- `register_item()` -- Item.dbc for crafted item client-side entry
 - `SQLGenerator.add_item()` -- crafted item and reagent items
 - `SpellRegistry` -- track recipe spell IDs
-- `DBCInjector` (low-level) -- can write Spell.dbc and SkillLineAbility.dbc
 
-**Gap:** Same `Spell.dbc` and `SkillLineAbility.dbc` schema gaps as #6 and #9.
-
-**External tools:** Same spell-related schemas. With those wrappers, crafting
-recipes become **Full Auto**.
+**External tools:** None.
 
 ---
 
@@ -512,15 +493,17 @@ recipes become **Full Auto**.
 
 **File:** [`04_creatures_encounters/add_new_creature.md`](04_creatures_encounters/add_new_creature.md)
 
-**Automation: Full Auto\*** | **pywowlib: Mostly Complete**
-
-\*Full Auto when using existing creature models (which is the common case).
+**Automation: Full Auto** | **pywowlib: Complete**
 
 `SQLGenerator.add_creature()` generates complete `creature_template` entries.
-`SQLGenerator.add_spawn()` handles world placement. `SQLGenerator.add_creature_ai()`
-generates SmartAI behaviors.
+`register_creature_display()` creates `CreatureDisplayInfo.dbc` records (16 fields,
+64 bytes) for custom model display configuration. `register_creature_model()` creates
+`CreatureModelData.dbc` records (28 fields, 112 bytes) for model file paths, collision,
+and bounding boxes.
 
 **What pywowlib covers:**
+- `register_creature_display()` -- CreatureDisplayInfo.dbc (16 fields, 64 bytes)
+- `register_creature_model()` -- CreatureModelData.dbc (28 fields, 112 bytes)
 - `SQLGenerator.add_creature()` -- full creature_template
 - `SQLGenerator.add_creatures()` -- batch creation
 - `SQLGenerator.add_spawn()` / `add_spawns()` -- world placement
@@ -528,20 +511,14 @@ generates SmartAI behaviors.
 - `SQLGenerator.add_creature_loot()` -- loot tables
 - `MPQPacker` -- pack custom M2/BLP models
 
-**Gap:** No `CreatureDisplayInfo.dbc` schema (for custom models: model ID,
-texture paths, extra display effects). No `CreatureModelData.dbc` schema (model
-file path, collision, bounding box). Not needed when reusing existing display IDs.
-
 **External tools:**
 | Tool | Purpose | Integrate? |
 |------|---------|------------|
-| `CreatureDisplayInfo.dbc` schema | Custom creature display | **Yes** -- add `register_creature_display()` |
-| `CreatureModelData.dbc` schema | Custom model data | **Yes** -- add `register_creature_model()` |
 | 3D modeling (Blender + M2 export) | Custom creature models | **No** -- creative tooling |
 
-**AI agent opportunity:** Fully automatable for creatures using existing models. AI
-can select appropriate display IDs, design stats, create AI behaviors, and place
-spawns from text descriptions.
+**AI agent opportunity:** Fully automatable. AI can select or create display
+configurations, design stats, create AI behaviors, and place spawns from text
+descriptions.
 
 ---
 
@@ -549,32 +526,33 @@ spawns from text descriptions.
 
 **File:** [`04_creatures_encounters/update_boss_mechanics.md`](04_creatures_encounters/update_boss_mechanics.md)
 
-**Automation: Full Auto** | **pywowlib: Mostly Complete**
+**Automation: Full Auto** | **pywowlib: Complete**
 
 `ScriptGenerator.add_boss_encounter()` produces complete multi-phase Eluna Lua
 scripts with timers, spell rotations, add spawning, void zones, and phase
-transitions. `SpellRegistry` manages boss ability IDs. `SQLGenerator` handles
-`creature_text` (boss yells), `creature_template`, and SmartAI fallback.
+transitions. `register_spell()` creates boss ability spells in `Spell.dbc`.
+`SpellRegistry` manages boss ability IDs. `SQLGenerator` handles `creature_text`
+(boss yells), `creature_template`, and SmartAI fallback.
 
 **What pywowlib covers:**
 - `ScriptGenerator.add_boss_encounter()` -- multi-phase Eluna Lua
 - `ScriptGenerator.add_instance_script()` -- instance-wide logic
+- `register_spell()` -- boss ability spells (Spell.dbc)
 - `SpellRegistry` -- boss spell ID management with Lua/JSON export
 - `SQLGenerator.add_creature_ai()` -- SmartAI alternative
 - `SQLGenerator` -- creature_text, creature_template, spawn placement
 
-**Gap:** C++ `InstanceScript` for non-Eluna servers. This is a fundamentally
-different scripting paradigm that requires recompiling the server core.
+**Note:** C++ `InstanceScript` for non-Eluna servers requires manual scripting
+and recompiling the server core.
 
 **External tools:**
 | Tool | Purpose | Integrate? |
 |------|---------|------------|
 | C++ compiler | Non-Eluna instance scripts | **No** -- different paradigm |
-| Spell.dbc schema | Boss ability spells | **Yes** (same as #6) |
 
-**AI agent opportunity:** Highly suitable. An AI agent can design complete boss
+**AI agent opportunity:** Fully automatable. An AI agent can design complete boss
 encounters from descriptions ("3-phase fight, enrages at 20%, summons adds in
-phase 2"), generate all scripts and SQL.
+phase 2"), generate all scripts, spells, and SQL.
 
 ---
 
@@ -674,27 +652,24 @@ with prerequisite logic, reputation gates, and class-specific paths.
 
 **File:** [`05_narrative_quests/add_object_interaction.md`](05_narrative_quests/add_object_interaction.md)
 
-**Automation: AI-Assisted** | **pywowlib: Mostly Complete**
+**Automation: Full Auto** | **pywowlib: Complete**
 
 `SQLGenerator.add_gameobject_template()` and `add_gameobject_spawn()` handle the
-server-side tables. SmartAI scripting covers interactive behaviors.
+server-side tables. `register_gameobject_display()` creates `GameObjectDisplayInfo.dbc`
+records (19 fields, 76 bytes) for custom gameobject models. SmartAI scripting
+covers interactive behaviors.
 
 **What pywowlib covers:**
+- `register_gameobject_display()` -- GameObjectDisplayInfo.dbc (19 fields, 76 bytes)
 - `SQLGenerator.add_gameobject_template()` -- all gameobject types (DOOR, CHEST, QUESTGIVER, GOOBER, etc.)
 - `SQLGenerator.add_gameobject_spawn()` -- world placement with quaternion rotation
 - `SQLGenerator.add_smartai()` -- interactive behaviors
 - `SQLGenerator.add_loot()` -- chest/container loot
 
-**Gap:** No `GameObjectDisplayInfo.dbc` schema for custom gameobject models.
-When using existing display IDs (most cases), this is fully covered.
+**External tools:** None (custom 3D models still require external modeling tools).
 
-**External tools:**
-| Tool | Purpose | Integrate? |
-|------|---------|------------|
-| `GameObjectDisplayInfo.dbc` schema | Custom display models | **Partial** -- add `register_gameobject_display()` for completeness, but existing display IDs cover most needs |
-
-**AI agent opportunity:** Fully automatable with existing display IDs. AI can
-design interactive objects, chest puzzles, and quest objectives.
+**AI agent opportunity:** Fully automatable. AI can design interactive objects,
+chest puzzles, and quest objectives with full DBC and SQL generation.
 
 ---
 
@@ -759,26 +734,26 @@ this with `ChrRaces.dbc` and `CharStartOutfit.dbc` schemas.
 
 **File:** [`06_system_ui/custom_ui_frame.md`](06_system_ui/custom_ui_frame.md)
 
-**Automation: AI-Assisted** | **pywowlib: None**
+**Automation: Full Auto** | **pywowlib: Complete**
 
-WoW AddOns are `.toc` + `.xml` + `.lua` files that use the client's AddOn API.
-This is entirely outside pywowlib's domain (pywowlib works with binary formats
-and server SQL, not AddOn Lua/XML).
+`generate_addon()` produces complete WoW AddOn scaffolds: `.toc` file (Interface:
+30300 for WotLK 3.3.5), `.lua` with event handling, slash commands, and saved
+variables support, and optional `.xml` with frame definitions including backdrop
+and movable support. `MPQPacker` can package AddOns into MPQ for server-wide
+distribution.
 
-**What pywowlib covers:** Nothing directly. `MPQPacker` can package AddOns into
-MPQ for server-wide distribution.
+**What pywowlib covers:**
+- `generate_addon()` -- complete AddOn scaffold (TOC + Lua + optional XML)
+  - TOC with Interface version, title, notes, dependencies, saved variables
+  - Lua with event registration, slash commands, saved variable persistence
+  - XML with frame definitions, backdrop, movable/resizable support
+- `MPQPacker` -- package AddOns into MPQ for distribution
 
-**Gap:** No AddOn scaffolding, template generation, or XML/Lua code generation.
+**External tools:** None for scaffolding. WoW API reference needed for custom
+AddOn logic beyond the generated boilerplate.
 
-**External tools:**
-| Tool | Purpose | Integrate? |
-|------|---------|------------|
-| Text editor + WoW API reference | AddOn development | N/A |
-| AddOn scaffolding generator | Template generation | **Yes -- consider adding.** A `generate_addon_scaffold(name, frames, events)` function could produce TOC + boilerplate Lua + XML. Low effort, moderate value for mod teams |
-
-**AI agent opportunity:** Highly suitable for AI generation. An AI agent can
-produce complete AddOns from descriptions, but this is standalone code generation
-rather than pywowlib API usage.
+**AI agent opportunity:** Fully automatable. An AI agent can produce complete
+AddOns from descriptions, generating all TOC/Lua/XML files via `generate_addon()`.
 
 ---
 
@@ -809,40 +784,36 @@ generate parabolic arc waypoints for smooth flight curves, and create all NPCs.
 
 ## Integration Priority Recommendations
 
-Based on the assessment above, here are the DBC schemas and features that would
-have the highest impact if added to pywowlib, ordered by how many use cases they
-unblock:
+Most high-impact schemas and features have been implemented. Below is the updated
+status of each originally-identified gap.
 
-### High Priority (unblocks 5+ use cases)
+### Implemented (all use cases unblocked)
 
-| Schema/Feature | Use Cases Unblocked | Effort |
-|----------------|---------------------|--------|
-| **`Spell.dbc` convenience wrapper** | #6, #7, #9, #14, #16 (boss abilities) | High (234 fields, but can wrap common subset) |
-| **`SkillLineAbility.dbc` schema** | #6, #9, #14 | Low (14 fields) |
-| **vmap/mmap subprocess integration** | #1, #2 | Medium (subprocess calls, path management) |
+| Schema/Feature | Use Cases | Status |
+|----------------|-----------|--------|
+| **`Spell.dbc` convenience wrapper** (234 fields, 936 bytes) | #6, #7, #9, #14, #16 | `register_spell()`, `modify_spell()` |
+| **`SkillLineAbility.dbc` schema** (14 fields, 56 bytes) | #6, #9, #14 | `register_skill_line_ability()` |
+| **vmap/mmap subprocess integration** | #1, #2 | `generate_vmaps()`, `generate_mmaps()`, `generate_server_data()` |
+| **`Item.dbc` schema** (8 fields, 32 bytes) | #11, #14 | `register_item()` |
+| **`ItemSet.dbc` schema** (53 fields, 212 bytes) | #12 | `register_item_set()` |
+| **`SoundEntries.dbc` schema** (30 fields, 120 bytes) | #4 | `register_sound_entry()` |
+| **`CreatureDisplayInfo.dbc` schema** (16 fields, 64 bytes) | #15 | `register_creature_display()` |
+| **`CreatureModelData.dbc` schema** (28 fields, 112 bytes) | #15 | `register_creature_model()` |
+| **`Talent.dbc` schema** (23 fields, 92 bytes) | #8 | `register_talent()` |
+| **`TalentTab.dbc` schema** (24 fields, 96 bytes) | #8 | `register_talent_tab()` |
+| **`SpellIcon.dbc` schema** (2 fields, 8 bytes) | #6 | `register_spell_icon()` |
+| **`GameObjectDisplayInfo.dbc` schema** (19 fields, 76 bytes) | #21 | `register_gameobject_display()` |
+| **`ZoneIntroMusicTable.dbc` schema** (5 fields, 20 bytes) | #4 | `register_zone_intro_music()` |
+| **AddOn scaffold generator** | #24 | `generate_addon()` |
+| **ADT doodad/WMO insertion API** | #3 | `add_doodad_to_adt()`, `add_wmo_to_adt()` |
 
-### Medium Priority (unblocks 2-3 use cases)
+### Remaining Gaps (nice to have)
 
-| Schema/Feature | Use Cases Unblocked | Effort |
-|----------------|---------------------|--------|
-| **`Item.dbc` schema** | #11, #14 | Low (7 fields, 28 bytes) |
-| **`ItemDisplayInfo.dbc` schema** | #11 | Medium (26 fields) |
-| **`ItemSet.dbc` schema** | #12 | Medium (locstring + arrays) |
-| **`SoundEntries.dbc` schema** | #4 | Medium (31 fields) |
-| **`CreatureDisplayInfo.dbc` schema** | #15 | Medium |
-| **`CreatureModelData.dbc` schema** | #15 | Medium |
-| **`Talent.dbc` + `TalentTab.dbc` schemas** | #8 | Medium |
-
-### Low Priority (nice to have)
-
-| Schema/Feature | Use Cases Unblocked | Effort |
-|----------------|---------------------|--------|
-| `SpellIcon.dbc` schema | #6 | Low |
-| `GameObjectDisplayInfo.dbc` schema | #21 | Low |
-| `ZoneIntroMusicTable.dbc` schema | #4 | Low |
-| AddOn scaffold generator | #24 | Low-Medium |
-| `ChrRaces.dbc` + `CharStartOutfit.dbc` schemas | #23 (reskin only) | Medium |
-| ADT doodad/WMO insertion API (for existing ADTs) | #3 | Medium |
+| Schema/Feature | Use Cases | Effort | Notes |
+|----------------|-----------|--------|-------|
+| `ItemDisplayInfo.dbc` schema (26 fields) | #11 | Medium | Not needed when reusing existing display IDs |
+| `SpellVisual.dbc` / `SpellVisualKit.dbc` | #6 | Medium-High | Reuse existing visual IDs for now |
+| `ChrRaces.dbc` + `CharStartOutfit.dbc` | #23 (reskin only) | Medium | Only useful for race reskins; new races need C++ core changes |
 
 ### Not Worth Integrating
 

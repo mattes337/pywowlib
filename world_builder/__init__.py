@@ -12,8 +12,18 @@ zones and dungeons via ZoneExporter / ZoneImporter.
 import os
 
 from .wdt_generator import create_wdt, write_wdt, read_wdt
-from .adt_composer import create_adt, write_adt, read_adt
-from .dbc_injector import DBCInjector, register_map, register_area
+from .adt_composer import (create_adt, write_adt, read_adt,
+                           add_doodad_to_adt, add_wmo_to_adt)
+from .dbc_injector import (DBCInjector, register_map, register_area,
+                           register_spell, modify_spell,
+                           register_skill_line_ability,
+                           register_item, register_item_set,
+                           register_sound_entry,
+                           register_creature_display, register_creature_model,
+                           register_talent, register_talent_tab,
+                           register_spell_icon,
+                           register_gameobject_display,
+                           register_zone_intro_music)
 from .mpq_packer import MPQPacker, pack_map, MPQExtractor, extract_map
 from .blp_converter import convert_png_to_blp, image_to_blp, batch_convert, validate_blp
 from .minimap_pipeline import import_minimap_tiles, generate_test_minimaps
@@ -33,6 +43,8 @@ from .intermediate_format import (IDAllocator, create_zone_template,
                                   create_dungeon_template)
 from .zone_exporter import ZoneExporter, export_zone, export_dungeon
 from .zone_importer import ZoneImporter, import_zone, import_dungeon
+from .vmap_generator import generate_vmaps, generate_mmaps, generate_server_data
+from .addon_generator import generate_addon
 
 
 def build_zone(name, output_dir, coords=None, heightmap=None, texture_paths=None,

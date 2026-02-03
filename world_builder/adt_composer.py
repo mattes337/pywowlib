@@ -930,3 +930,372 @@ def read_adt(filepath, highres=False):
         'wmo_filenames': wmo_filenames,
         'chunks': chunks,
     }
+
+
+# ---------------------------------------------------------------------------
+# ADT doodad / WMO insertion helpers
+# ---------------------------------------------------------------------------
+
+# Binary sizes for placement structs (must match adt_chunks.py)
+_DOODAD_DEF_SIZE = 36   # ADTDoodadDefinition
+_WMO_DEF_SIZE = 64       # ADTWMODefinition
+
+
+def _find_chunk(adt_bytes, magic, start=0):
+    """
+    Find a chunk by its 4-byte reversed magic in *adt_bytes*.
+
+    Returns (data_offset, data_size) where *data_offset* points to the
+    first byte after the chunk header (magic + uint32 size), or None if
+    the chunk is not found.
+    """
+    pos = start
+    while pos < len(adt_bytes) - 8:
+        if adt_bytes[pos:pos + 4] == magic:
+            size = struct.unpack_from('<I', adt_bytes, pos + 4)[0]
+            return pos + 8, size
+        pos += 1
+    return None, None
+
+
+def _find_all_chunks(adt_bytes):
+    """
+    Parse top-level chunk positions in the ADT.
+
+    Returns a dict mapping 4-byte magic -> (header_offset, data_offset, data_size).
+    Only records the *first* occurrence of each magic (except MCNK which is
+    repeated 256 times -- we stop at the first one).
+    """
+    result = {}
+    pos = 0
+    while pos < len(adt_bytes) - 8:
+        magic = adt_bytes[pos:pos + 4]
+        size = struct.unpack_from('<I', adt_bytes, pos + 4)[0]
+        if magic not in result:
+            result[magic] = (pos, pos + 8, size)
+        if magic == _MAGIC_MCNK:
+            break  # Don't iterate through all 256 MCNKs
+        pos += 8 + size
+    return result
+
+
+def _rebuild_adt(adt_bytes, mmdx_data, mmid_data, mddf_data,
+                 mwmo_data, mwid_data, modf_data):
+    """
+    Rebuild an ADT binary with replaced MMDX/MMID/MDDF/MWMO/MWID/MODF chunks.
+
+    The MHDR offsets and MCIN absolute positions are recalculated to account
+    for the changed chunk sizes.
+
+    Args:
+        adt_bytes: Original ADT bytes.
+        mmdx_data: New MMDX chunk data (without header).
+        mmid_data: New MMID chunk data (without header).
+        mddf_data: New MDDF chunk data (without header).
+        mwmo_data: New MWMO chunk data (without header).
+        mwid_data: New MWID chunk data (without header).
+        modf_data: New MODF chunk data (without header).
+
+    Returns:
+        bytes: The rebuilt ADT.
+    """
+    chunks = _find_all_chunks(adt_bytes)
+
+    # Extract existing chunk data for chunks we don't modify
+    def _get_data(magic):
+        if magic in chunks:
+            _, dofs, dsz = chunks[magic]
+            return adt_bytes[dofs:dofs + dsz]
+        return b''
+
+    mver_data = _get_data(_MAGIC_MVER)
+    # MHDR data will be rebuilt
+    mcin_data_old = _get_data(_MAGIC_MCIN)
+    mtex_data = _get_data(_MAGIC_MTEX)
+
+    # Collect all MCNK blobs (256 of them, starting from first MCNK)
+    mcnk_blobs = []
+    if _MAGIC_MCNK in chunks:
+        first_mcnk_hdr_ofs = chunks[_MAGIC_MCNK][0]
+        pos = first_mcnk_hdr_ofs
+        while pos < len(adt_bytes) - 8:
+            magic = adt_bytes[pos:pos + 4]
+            if magic != _MAGIC_MCNK:
+                break
+            size = struct.unpack_from('<I', adt_bytes, pos + 4)[0]
+            mcnk_blobs.append(adt_bytes[pos:pos + 8 + size])
+            pos += 8 + size
+
+    # Rebuild top-level layout
+    _HDR = _CHUNK_HEADER_SIZE
+
+    mver_total = _HDR + len(mver_data)
+    _MHDR_DATA_SIZE = 64
+    mhdr_total = _HDR + _MHDR_DATA_SIZE
+    _MCIN_DATA_SIZE = _TOTAL_CHUNKS * 16
+    mcin_total = _HDR + _MCIN_DATA_SIZE
+    mtex_total = _HDR + len(mtex_data)
+    mmdx_total = _HDR + len(mmdx_data)
+    mmid_total = _HDR + len(mmid_data)
+    mwmo_total = _HDR + len(mwmo_data)
+    mwid_total = _HDR + len(mwid_data)
+    mddf_total = _HDR + len(mddf_data)
+    modf_total = _HDR + len(modf_data)
+
+    pos_mver = 0
+    pos_mhdr = pos_mver + mver_total
+    mhdr_data_start = pos_mhdr + _HDR
+
+    pos_mcin = pos_mhdr + mhdr_total
+    pos_mtex = pos_mcin + mcin_total
+    pos_mmdx = pos_mtex + mtex_total
+    pos_mmid = pos_mmdx + mmdx_total
+    pos_mwmo = pos_mmid + mmid_total
+    pos_mwid = pos_mwmo + mwmo_total
+    pos_mddf = pos_mwid + mwid_total
+    pos_modf = pos_mddf + mddf_total
+    pos_first_mcnk = pos_modf + modf_total
+
+    # MHDR offsets (relative to mhdr_data_start)
+    # Reconstruct MHDR: read flags from original
+    orig_mhdr = _get_data(_MAGIC_MHDR)
+    mhdr_flags = struct.unpack_from('<I', orig_mhdr, 0)[0] if len(orig_mhdr) >= 4 else 0
+
+    mhdr_data = struct.pack('<16I',
+                            mhdr_flags,
+                            pos_mcin - mhdr_data_start,
+                            pos_mtex - mhdr_data_start,
+                            pos_mmdx - mhdr_data_start,
+                            pos_mmid - mhdr_data_start,
+                            pos_mwmo - mhdr_data_start,
+                            pos_mwid - mhdr_data_start,
+                            pos_mddf - mhdr_data_start,
+                            pos_modf - mhdr_data_start,
+                            0, 0, 0,  # mfbo, mh2o, mtxf
+                            0, 0, 0, 0)  # padding
+
+    # Rebuild MCIN with new absolute offsets
+    mcin_buf = BytesIO()
+    current_mcnk_pos = pos_first_mcnk
+    for i in range(min(len(mcnk_blobs), _TOTAL_CHUNKS)):
+        mcnk_size = len(mcnk_blobs[i])
+        mcin_buf.write(struct.pack('<IIII', current_mcnk_pos, mcnk_size, 0, 0))
+        current_mcnk_pos += mcnk_size
+    # Pad if fewer than 256 MCNKs (shouldn't happen, but be safe)
+    for i in range(len(mcnk_blobs), _TOTAL_CHUNKS):
+        mcin_buf.write(struct.pack('<IIII', 0, 0, 0, 0))
+    mcin_data = mcin_buf.getvalue()
+
+    # Assemble
+    buf = BytesIO()
+
+    buf.write(_pack_chunk(_MAGIC_MVER, mver_data))
+    buf.write(_pack_chunk(_MAGIC_MHDR, mhdr_data))
+    buf.write(_pack_chunk(_MAGIC_MCIN, mcin_data))
+    buf.write(_pack_chunk(_MAGIC_MTEX, mtex_data))
+    buf.write(_pack_chunk(_MAGIC_MMDX, mmdx_data))
+    buf.write(_pack_chunk(_MAGIC_MMID, mmid_data))
+    buf.write(_pack_chunk(_MAGIC_MWMO, mwmo_data))
+    buf.write(_pack_chunk(_MAGIC_MWID, mwid_data))
+    buf.write(_pack_chunk(_MAGIC_MDDF, mddf_data))
+    buf.write(_pack_chunk(_MAGIC_MODF, modf_data))
+
+    assert buf.tell() == pos_first_mcnk, \
+        "Expected MCNKs at {}, got {}".format(pos_first_mcnk, buf.tell())
+
+    for blob in mcnk_blobs:
+        buf.write(blob)
+
+    return buf.getvalue()
+
+
+def _extract_string_block(adt_bytes, magic):
+    """
+    Extract the null-terminated string list from a chunk (MMDX or MWMO).
+
+    Returns (strings, offsets) where strings is a list of decoded strings
+    and offsets is a list of byte offsets into the chunk data.
+    """
+    data_ofs, data_sz = _find_chunk(adt_bytes, magic)
+    if data_ofs is None or data_sz == 0:
+        return [], []
+
+    raw = adt_bytes[data_ofs:data_ofs + data_sz]
+    strings = []
+    offsets = []
+    start = 0
+    for i, b in enumerate(raw):
+        if b == 0:
+            s = raw[start:i].decode('ascii', errors='replace')
+            if s:
+                offsets.append(start)
+                strings.append(s)
+            start = i + 1
+
+    return strings, offsets
+
+
+def _build_string_block(strings):
+    """
+    Build a null-terminated string block from a list of strings.
+
+    Returns (block_bytes, offset_list) where offset_list[i] is the byte
+    offset of strings[i] within block_bytes.
+    """
+    buf = BytesIO()
+    offsets = []
+    for s in strings:
+        offsets.append(buf.tell())
+        buf.write(s.encode('ascii'))
+        buf.write(b'\x00')
+    return buf.getvalue(), offsets
+
+
+def _extract_offset_table(adt_bytes, magic):
+    """
+    Extract a uint32 offset table from a chunk (MMID or MWID).
+
+    Returns a list of uint32 values.
+    """
+    data_ofs, data_sz = _find_chunk(adt_bytes, magic)
+    if data_ofs is None or data_sz == 0:
+        return []
+    count = data_sz // 4
+    return list(struct.unpack_from('<{}I'.format(count), adt_bytes, data_ofs))
+
+
+def _extract_placement_data(adt_bytes, magic):
+    """Extract raw placement chunk data (MDDF or MODF)."""
+    data_ofs, data_sz = _find_chunk(adt_bytes, magic)
+    if data_ofs is None:
+        return b''
+    return adt_bytes[data_ofs:data_ofs + data_sz]
+
+
+def add_doodad_to_adt(adt_bytes, m2_path, position, rotation=(0, 0, 0),
+                      scale=1024, unique_id=0, flags=0):
+    """
+    Insert a doodad (.m2) placement into ADT binary data.
+
+    Modifies the MMDX (string block), MMID (offset table), and MDDF
+    (placement definitions) chunks. All MHDR offsets and MCIN entries
+    are recalculated.
+
+    Args:
+        adt_bytes: Existing ADT bytes (from create_adt or read from disk).
+        m2_path: M2 model path using backslash separators
+                 (e.g. ``"World\\\\Azeroth\\\\Elwynn\\\\Tree.m2"``).
+        position: (x, y, z) world coordinates.
+        rotation: (x, y, z) rotation in degrees. Default (0, 0, 0).
+        scale: Scale factor as uint16 (1024 = 1.0x). Default 1024.
+        unique_id: Unique placement ID. Default 0.
+        flags: MDDF flags (uint16). Default 0.
+
+    Returns:
+        bytes: Modified ADT binary with the doodad inserted.
+    """
+    # Parse existing M2 strings and add new one if not present
+    strings, _ = _extract_string_block(adt_bytes, _MAGIC_MMDX)
+
+    if m2_path in strings:
+        name_id = strings.index(m2_path)
+    else:
+        name_id = len(strings)
+        strings.append(m2_path)
+
+    # Rebuild MMDX and MMID
+    mmdx_data, string_offsets = _build_string_block(strings)
+    mmid_data = struct.pack('<{}I'.format(len(string_offsets)), *string_offsets) if string_offsets else b''
+
+    # Build new MDDF entry (36 bytes)
+    px, py, pz = position
+    rx, ry, rz = rotation
+    new_entry = struct.pack('<II3f3fHH',
+                            name_id, unique_id,
+                            px, py, pz,
+                            rx, ry, rz,
+                            scale, flags)
+
+    # Append to existing MDDF data
+    mddf_data = _extract_placement_data(adt_bytes, _MAGIC_MDDF) + new_entry
+
+    # Extract existing WMO chunks unchanged
+    wmo_strings, _ = _extract_string_block(adt_bytes, _MAGIC_MWMO)
+    mwmo_data, wmo_offsets = _build_string_block(wmo_strings)
+    mwid_data = struct.pack('<{}I'.format(len(wmo_offsets)), *wmo_offsets) if wmo_offsets else b''
+    modf_data = _extract_placement_data(adt_bytes, _MAGIC_MODF)
+
+    return _rebuild_adt(adt_bytes, mmdx_data, mmid_data, mddf_data,
+                        mwmo_data, mwid_data, modf_data)
+
+
+def add_wmo_to_adt(adt_bytes, wmo_path, position, rotation=(0, 0, 0),
+                   extents=None, unique_id=0, flags=0,
+                   doodad_set=0, name_set=0, scale=1024):
+    """
+    Insert a WMO placement into ADT binary data.
+
+    Modifies the MWMO (string block), MWID (offset table), and MODF
+    (placement definitions) chunks. All MHDR offsets and MCIN entries
+    are recalculated.
+
+    Args:
+        adt_bytes: Existing ADT bytes.
+        wmo_path: WMO model path using backslash separators
+                  (e.g. ``"World\\\\wmo\\\\Dungeon\\\\MyDungeon.wmo"``).
+        position: (x, y, z) world coordinates.
+        rotation: (x, y, z) rotation in degrees. Default (0, 0, 0).
+        extents: Optional ((min_x, min_y, min_z), (max_x, max_y, max_z))
+                 bounding box. If None, uses position for both min/max.
+        unique_id: Unique placement ID. Default 0.
+        flags: MODF flags (uint16). Default 0.
+        doodad_set: Doodad set index (uint16). Default 0.
+        name_set: Name set index (uint16). Default 0.
+        scale: Scale factor as uint16 (1024 = 1.0x). Default 1024.
+
+    Returns:
+        bytes: Modified ADT binary with the WMO inserted.
+    """
+    # Parse existing WMO strings and add new one if not present
+    strings, _ = _extract_string_block(adt_bytes, _MAGIC_MWMO)
+
+    if wmo_path in strings:
+        name_id = strings.index(wmo_path)
+    else:
+        name_id = len(strings)
+        strings.append(wmo_path)
+
+    # Rebuild MWMO and MWID
+    mwmo_data, string_offsets = _build_string_block(strings)
+    mwid_data = struct.pack('<{}I'.format(len(string_offsets)), *string_offsets) if string_offsets else b''
+
+    # Build bounding box
+    if extents is None:
+        px, py, pz = position
+        ext_min = (px, py, pz)
+        ext_max = (px, py, pz)
+    else:
+        ext_min, ext_max = extents
+
+    # Build new MODF entry (64 bytes)
+    px, py, pz = position
+    rx, ry, rz = rotation
+    new_entry = struct.pack('<II3f3f3f3fHHHH',
+                            name_id, unique_id,
+                            px, py, pz,
+                            rx, ry, rz,
+                            ext_min[0], ext_min[1], ext_min[2],
+                            ext_max[0], ext_max[1], ext_max[2],
+                            flags, doodad_set, name_set, scale)
+
+    # Append to existing MODF data
+    modf_data = _extract_placement_data(adt_bytes, _MAGIC_MODF) + new_entry
+
+    # Extract existing M2 chunks unchanged
+    m2_strings, _ = _extract_string_block(adt_bytes, _MAGIC_MMDX)
+    mmdx_data, m2_offsets = _build_string_block(m2_strings)
+    mmid_data = struct.pack('<{}I'.format(len(m2_offsets)), *m2_offsets) if m2_offsets else b''
+    mddf_data = _extract_placement_data(adt_bytes, _MAGIC_MDDF)
+
+    return _rebuild_adt(adt_bytes, mmdx_data, mmid_data, mddf_data,
+                        mwmo_data, mwid_data, modf_data)

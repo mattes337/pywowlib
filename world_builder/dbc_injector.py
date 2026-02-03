@@ -2168,3 +2168,1773 @@ def update_area_atmosphere(dbc_dir, area_id, ambience_id=None, zone_music=None, 
             return
 
     raise ValueError("Area ID {} not found in AreaTable.dbc".format(area_id))
+
+
+# ---------------------------------------------------------------------------
+# Spell.dbc field layout (3.3.0.10958 - 3.3.5.12340)
+# Source: wdbx/dbd/definitions/Spell.dbd
+#
+# 234 fields = 936 bytes per record.
+# This DBC has a mix of uint32 and float fields plus four locstring blocks
+# (Name_lang, NameSubtext_lang, Description_lang, AuraDescription_lang).
+#
+# Rather than listing all 234 fields individually, we use a field-name-to-
+# index mapping (_SPELL_FIELD_MAP) so callers can set fields by name.
+# Float-typed field indices are tracked in _SPELL_FLOAT_FIELDS.
+# ---------------------------------------------------------------------------
+_SPELL_FIELD_COUNT = 234
+_SPELL_RECORD_SIZE = _SPELL_FIELD_COUNT * 4  # 936
+
+# Maps human-readable field names to their uint32 index within the record.
+# Locstring fields are listed by their first index (the enUS slot at offset+0);
+# the remaining 16 uint32 values follow contiguously.
+_SPELL_FIELD_MAP = {
+    'ID':                          0,
+    'Category':                    1,
+    'DispelType':                  2,
+    'Mechanic':                    3,
+    'Attributes':                  4,
+    'AttributesEx':                5,
+    'AttributesExB':               6,
+    'AttributesExC':               7,
+    'AttributesExD':               8,
+    'AttributesExE':               9,
+    'AttributesExF':              10,
+    'AttributesExG':              11,
+    'ShapeshiftMask0':            12,
+    'ShapeshiftMask1':            13,
+    'ShapeshiftExclude0':         14,
+    'ShapeshiftExclude1':         15,
+    'Targets':                    16,
+    'TargetCreatureType':         17,
+    'RequiresSpellFocus':         18,
+    'FacingCasterFlags':          19,
+    'CasterAuraState':            20,
+    'TargetAuraState':            21,
+    'ExcludeCasterAuraState':     22,
+    'ExcludeTargetAuraState':     23,
+    'CasterAuraSpell':            24,
+    'TargetAuraSpell':            25,
+    'ExcludeCasterAuraSpell':     26,
+    'ExcludeTargetAuraSpell':     27,
+    'CastingTimeIndex':           28,
+    'RecoveryTime':               29,
+    'CategoryRecoveryTime':       30,
+    'InterruptFlags':             31,
+    'AuraInterruptFlags':         32,
+    'ChannelInterruptFlags':      33,
+    'ProcTypeMask':               34,
+    'ProcChance':                 35,
+    'ProcCharges':                36,
+    'MaxLevel':                   37,
+    'BaseLevel':                  38,
+    'SpellLevel':                 39,
+    'DurationIndex':              40,
+    'PowerType':                  41,
+    'ManaCost':                   42,
+    'ManaCostPerLevel':           43,
+    'ManaPerSecond':              44,
+    'ManaPerSecondPerLevel':      45,
+    'RangeIndex':                 46,
+    'Speed':                      47,   # float
+    'ModalNextSpell':             48,
+    'CumulativeAura':             49,
+    'Totem0':                     50,
+    'Totem1':                     51,
+    'Reagent0':                   52,
+    'Reagent1':                   53,
+    'Reagent2':                   54,
+    'Reagent3':                   55,
+    'Reagent4':                   56,
+    'Reagent5':                   57,
+    'Reagent6':                   58,
+    'Reagent7':                   59,
+    'ReagentCount0':              60,
+    'ReagentCount1':              61,
+    'ReagentCount2':              62,
+    'ReagentCount3':              63,
+    'ReagentCount4':              64,
+    'ReagentCount5':              65,
+    'ReagentCount6':              66,
+    'ReagentCount7':              67,
+    'EquippedItemClass':          68,
+    'EquippedItemSubclass':       69,
+    'EquippedItemInvTypes':       70,
+    'Effect0':                    71,
+    'Effect1':                    72,
+    'Effect2':                    73,
+    'EffectDieSides0':            74,
+    'EffectDieSides1':            75,
+    'EffectDieSides2':            76,
+    'EffectRealPointsPerLevel0':  77,   # float
+    'EffectRealPointsPerLevel1':  78,   # float
+    'EffectRealPointsPerLevel2':  79,   # float
+    'EffectBasePoints0':          80,
+    'EffectBasePoints1':          81,
+    'EffectBasePoints2':          82,
+    'EffectMechanic0':            83,
+    'EffectMechanic1':            84,
+    'EffectMechanic2':            85,
+    'ImplicitTargetA0':           86,
+    'ImplicitTargetA1':           87,
+    'ImplicitTargetA2':           88,
+    'ImplicitTargetB0':           89,
+    'ImplicitTargetB1':           90,
+    'ImplicitTargetB2':           91,
+    'EffectRadiusIndex0':         92,
+    'EffectRadiusIndex1':         93,
+    'EffectRadiusIndex2':         94,
+    'EffectAura0':                95,
+    'EffectAura1':                96,
+    'EffectAura2':                97,
+    'EffectAuraPeriod0':          98,
+    'EffectAuraPeriod1':          99,
+    'EffectAuraPeriod2':         100,
+    'EffectAmplitude0':          101,   # float
+    'EffectAmplitude1':          102,   # float
+    'EffectAmplitude2':          103,   # float
+    'EffectChainTargets0':       104,
+    'EffectChainTargets1':       105,
+    'EffectChainTargets2':       106,
+    'EffectItemType0':           107,
+    'EffectItemType1':           108,
+    'EffectItemType2':           109,
+    'EffectMiscValue0':          110,
+    'EffectMiscValue1':          111,
+    'EffectMiscValue2':          112,
+    'EffectMiscValueB0':         113,
+    'EffectMiscValueB1':         114,
+    'EffectMiscValueB2':         115,
+    'EffectTriggerSpell0':       116,
+    'EffectTriggerSpell1':       117,
+    'EffectTriggerSpell2':       118,
+    'EffectPointsPerCombo0':     119,   # float
+    'EffectPointsPerCombo1':     120,   # float
+    'EffectPointsPerCombo2':     121,   # float
+    'EffectSpellClassMaskA0':    122,
+    'EffectSpellClassMaskA1':    123,
+    'EffectSpellClassMaskA2':    124,
+    'EffectSpellClassMaskB0':    125,
+    'EffectSpellClassMaskB1':    126,
+    'EffectSpellClassMaskB2':    127,
+    'EffectSpellClassMaskC0':    128,
+    'EffectSpellClassMaskC1':    129,
+    'EffectSpellClassMaskC2':    130,
+    'SpellVisualID0':            131,
+    'SpellVisualID1':            132,
+    'SpellIconID':               133,
+    'ActiveIconID':              134,
+    'SpellPriority':             135,
+    'Name_lang':                 136,   # locstring 136..152
+    'NameSubtext_lang':          153,   # locstring 153..169
+    'Description_lang':          170,   # locstring 170..186
+    'AuraDescription_lang':      187,   # locstring 187..203
+    'ManaCostPct':               204,
+    'StartRecoveryCategory':     205,
+    'StartRecoveryTime':         206,
+    'MaxTargetLevel':            207,
+    'SpellClassSet':             208,
+    'SpellClassMask0':           209,
+    'SpellClassMask1':           210,
+    'SpellClassMask2':           211,
+    'MaxTargets':                212,
+    'DefenseType':               213,
+    'PreventionType':            214,
+    'StanceBarOrder':            215,
+    'EffectChainAmplitude0':     216,   # float
+    'EffectChainAmplitude1':     217,   # float
+    'EffectChainAmplitude2':     218,   # float
+    'MinFactionID':              219,
+    'MinReputation':             220,
+    'RequiredAuraVision':        221,
+    'RequiredTotemCategoryID0':  222,
+    'RequiredTotemCategoryID1':  223,
+    'RequiredAreasID':           224,
+    'SchoolMask':                225,
+    'RuneCostID':                226,
+    'SpellMissileID':            227,
+    'PowerDisplayID':            228,
+    'EffectBonusCoefficient0':   229,   # float
+    'EffectBonusCoefficient1':   230,   # float
+    'EffectBonusCoefficient2':   231,   # float
+    'DescriptionVariablesID':    232,
+    'Difficulty':                233,
+}
+
+# Set of field indices that use IEEE 754 float encoding instead of uint32.
+_SPELL_FLOAT_FIELDS = {
+    47,                     # Speed
+    77, 78, 79,             # EffectRealPointsPerLevel[3]
+    101, 102, 103,          # EffectAmplitude[3]
+    119, 120, 121,          # EffectPointsPerCombo[3]
+    216, 217, 218,          # EffectChainAmplitude[3]
+    229, 230, 231,          # EffectBonusCoefficient[3]
+}
+
+# Locstring field names and their starting indices (each spans 17 uint32 slots).
+_SPELL_LOCSTRING_FIELDS = {
+    'Name_lang':            136,
+    'NameSubtext_lang':     153,
+    'Description_lang':     170,
+    'AuraDescription_lang': 187,
+}
+
+
+def _build_spell_record(dbc, fields_dict):
+    """
+    Build a raw 936-byte Spell.dbc record for WotLK 3.3.5.
+
+    Args:
+        dbc: DBCInjector instance (needed for add_string on locstring fields).
+        fields_dict: Dict mapping field names (from _SPELL_FIELD_MAP) or raw
+                     integer indices to values.  Locstring fields accept a
+                     plain string which will be added to the string block and
+                     packed via _pack_locstring.
+
+    Returns:
+        bytes: 936-byte binary record.
+    """
+    buf = bytearray(_SPELL_RECORD_SIZE)
+
+    for key, value in fields_dict.items():
+        # Resolve field name to index
+        if isinstance(key, str):
+            if key not in _SPELL_FIELD_MAP:
+                raise ValueError("Unknown Spell.dbc field: {}".format(key))
+            idx = _SPELL_FIELD_MAP[key]
+        else:
+            idx = int(key)
+
+        byte_offset = idx * 4
+
+        # Locstring fields: pack 17 uint32 values starting at idx
+        if key in _SPELL_LOCSTRING_FIELDS:
+            if isinstance(value, str):
+                str_offset = dbc.add_string(value)
+            else:
+                str_offset = int(value)
+            loc_bytes = _pack_locstring(str_offset)
+            buf[byte_offset:byte_offset + len(loc_bytes)] = loc_bytes
+            continue
+
+        # Scalar field
+        if idx in _SPELL_FLOAT_FIELDS:
+            struct.pack_into('<f', buf, byte_offset, float(value))
+        else:
+            struct.pack_into('<I', buf, byte_offset, int(value) & 0xFFFFFFFF)
+
+    assert len(buf) == _SPELL_RECORD_SIZE, (
+        "Spell record size mismatch: expected {}, got {}".format(
+            _SPELL_RECORD_SIZE, len(buf)
+        )
+    )
+    return bytes(buf)
+
+
+def register_spell(
+    dbc_dir,
+    name,
+    spell_id=None,
+    school_mask=0x01,
+    cast_time_index=1,
+    duration_index=0,
+    range_index=0,
+    power_type=0,
+    mana_cost=0,
+    cooldown=0,
+    gcd=1500,
+    effect_1=0, effect_1_base_points=0, effect_1_aura=0,
+    effect_1_target_a=0, effect_1_target_b=0,
+    effect_1_radius_index=0, effect_1_trigger_spell=0,
+    effect_1_item_type=0, effect_1_misc_value=0,
+    effect_2=0, effect_2_base_points=0, effect_2_aura=0,
+    effect_2_target_a=0, effect_2_target_b=0,
+    effect_2_radius_index=0, effect_2_trigger_spell=0,
+    effect_2_item_type=0, effect_2_misc_value=0,
+    effect_3=0, effect_3_base_points=0, effect_3_aura=0,
+    effect_3_target_a=0, effect_3_target_b=0,
+    effect_3_radius_index=0, effect_3_trigger_spell=0,
+    effect_3_item_type=0, effect_3_misc_value=0,
+    spell_icon_id=1,
+    spell_visual_id=0,
+    name_subtext=None,
+    description=None,
+    aura_description=None,
+    attributes=0,
+    attributes_ex=0,
+    category=0,
+    mechanic=0,
+    **kwargs,
+):
+    """
+    Register a new spell in Spell.dbc.
+
+    Provides named parameters for the most commonly used fields.  Any
+    additional Spell.dbc fields can be passed via **kwargs using the
+    names defined in _SPELL_FIELD_MAP.
+
+    Args:
+        dbc_dir: Path to directory containing Spell.dbc.
+        name: Spell display name (enUS locstring).
+        spell_id: Specific spell ID or None for auto (max_id + 1).
+        school_mask: Damage school bitmask (0x01=Physical, 0x02=Holy, ...).
+        cast_time_index: FK to SpellCastTimes.dbc (1 = instant).
+        duration_index: FK to SpellDuration.dbc (0 = no duration).
+        range_index: FK to SpellRange.dbc (0 = self).
+        power_type: 0=mana, 1=rage, 2=focus, 3=energy, 6=runic power.
+        mana_cost: Base resource cost.
+        cooldown: RecoveryTime in milliseconds (spell-specific cooldown).
+        gcd: StartRecoveryTime in milliseconds (global cooldown, default 1500).
+        effect_1..3: Effect type for each slot (FK to SpellEffect enum).
+        effect_1..3_base_points: Base value for each effect.
+        effect_1..3_aura: Aura type for each effect slot.
+        effect_1..3_target_a/b: Implicit targeting for each effect slot.
+        effect_1..3_radius_index: FK to SpellRadius.dbc for each effect.
+        effect_1..3_trigger_spell: Triggered spell ID for each effect.
+        effect_1..3_item_type: Item type mask for each effect.
+        effect_1..3_misc_value: Miscellaneous value for each effect.
+        spell_icon_id: FK to SpellIcon.dbc (default 1).
+        spell_visual_id: FK to SpellVisual.dbc (0 = none).
+        name_subtext: Optional spell rank/subtext (enUS locstring).
+        description: Optional tooltip description (enUS locstring).
+        aura_description: Optional aura tooltip text (enUS locstring).
+        attributes: Spell attributes bitmask.
+        attributes_ex: Extended attributes bitmask.
+        category: Spell category ID.
+        mechanic: Spell mechanic type.
+        **kwargs: Additional field overrides by _SPELL_FIELD_MAP name.
+
+    Returns:
+        int: The assigned spell ID.
+    """
+    filepath = os.path.join(dbc_dir, 'Spell.dbc')
+    dbc = DBCInjector(filepath)
+
+    if spell_id is None:
+        spell_id = dbc.get_max_id() + 1
+
+    fields = {
+        'ID':                   spell_id,
+        'Category':             category,
+        'Mechanic':             mechanic,
+        'Attributes':           attributes,
+        'AttributesEx':         attributes_ex,
+        'CastingTimeIndex':     cast_time_index,
+        'RecoveryTime':         cooldown,
+        'DurationIndex':        duration_index,
+        'PowerType':            power_type,
+        'ManaCost':             mana_cost,
+        'RangeIndex':           range_index,
+        'SchoolMask':           school_mask,
+        'SpellIconID':          spell_icon_id,
+        'SpellVisualID0':       spell_visual_id,
+        'StartRecoveryCategory':  0,
+        'StartRecoveryTime':    gcd,
+
+        # Effect slot 1
+        'Effect0':              effect_1,
+        'EffectBasePoints0':    effect_1_base_points,
+        'EffectAura0':          effect_1_aura,
+        'ImplicitTargetA0':     effect_1_target_a,
+        'ImplicitTargetB0':     effect_1_target_b,
+        'EffectRadiusIndex0':   effect_1_radius_index,
+        'EffectTriggerSpell0':  effect_1_trigger_spell,
+        'EffectItemType0':      effect_1_item_type,
+        'EffectMiscValue0':     effect_1_misc_value,
+
+        # Effect slot 2
+        'Effect1':              effect_2,
+        'EffectBasePoints1':    effect_2_base_points,
+        'EffectAura1':          effect_2_aura,
+        'ImplicitTargetA1':     effect_2_target_a,
+        'ImplicitTargetB1':     effect_2_target_b,
+        'EffectRadiusIndex1':   effect_2_radius_index,
+        'EffectTriggerSpell1':  effect_2_trigger_spell,
+        'EffectItemType1':      effect_2_item_type,
+        'EffectMiscValue1':     effect_2_misc_value,
+
+        # Effect slot 3
+        'Effect2':              effect_3,
+        'EffectBasePoints2':    effect_3_base_points,
+        'EffectAura2':          effect_3_aura,
+        'ImplicitTargetA2':     effect_3_target_a,
+        'ImplicitTargetB2':     effect_3_target_b,
+        'EffectRadiusIndex2':   effect_3_radius_index,
+        'EffectTriggerSpell2':  effect_3_trigger_spell,
+        'EffectItemType2':      effect_3_item_type,
+        'EffectMiscValue2':     effect_3_misc_value,
+
+        # Locstring fields (handled as strings by _build_spell_record)
+        'Name_lang':            name,
+    }
+
+    if name_subtext:
+        fields['NameSubtext_lang'] = name_subtext
+    if description:
+        fields['Description_lang'] = description
+    if aura_description:
+        fields['AuraDescription_lang'] = aura_description
+
+    # Apply caller overrides (kwargs win over defaults)
+    fields.update(kwargs)
+
+    record = _build_spell_record(dbc, fields)
+
+    dbc.records.append(record)
+    dbc.write(filepath)
+
+    return spell_id
+
+
+def modify_spell(dbc_dir, spell_id, **changes):
+    """
+    Modify fields of an existing Spell.dbc record.
+
+    Args:
+        dbc_dir: Path to directory containing Spell.dbc.
+        spell_id: ID of the spell record to modify.
+        **changes: Field names (from _SPELL_FIELD_MAP) mapped to new values.
+                   Locstring field names accept a plain string which will be
+                   added to the string block and re-packed.
+
+    Raises:
+        ValueError: If spell_id is not found or a field name is unknown.
+    """
+    filepath = os.path.join(dbc_dir, 'Spell.dbc')
+    dbc = DBCInjector(filepath)
+
+    for i, rec in enumerate(dbc.records):
+        rec_id = struct.unpack_from('<I', rec, 0)[0]
+        if rec_id != spell_id:
+            continue
+
+        buf = bytearray(rec)
+
+        for key, value in changes.items():
+            if key not in _SPELL_FIELD_MAP:
+                raise ValueError("Unknown Spell.dbc field: {}".format(key))
+            idx = _SPELL_FIELD_MAP[key]
+            byte_offset = idx * 4
+
+            # Locstring fields
+            if key in _SPELL_LOCSTRING_FIELDS:
+                if isinstance(value, str):
+                    str_offset = dbc.add_string(value)
+                else:
+                    str_offset = int(value)
+                loc_bytes = _pack_locstring(str_offset)
+                buf[byte_offset:byte_offset + len(loc_bytes)] = loc_bytes
+                continue
+
+            # Scalar field
+            if idx in _SPELL_FLOAT_FIELDS:
+                struct.pack_into('<f', buf, byte_offset, float(value))
+            else:
+                struct.pack_into('<I', buf, byte_offset, int(value) & 0xFFFFFFFF)
+
+        dbc.records[i] = bytes(buf)
+        dbc.write(filepath)
+        return
+
+    raise ValueError("Spell ID {} not found in Spell.dbc".format(spell_id))
+
+
+# ---------------------------------------------------------------------------
+# SkillLineAbility.dbc field layout (3.3.0.10958 - 3.3.5.12340)
+# Source: wdbx/dbd/definitions/SkillLineAbility.dbd
+#
+# Index  Field                        Type     Count
+# -----  ---------------------------  -------  -----
+#  0     ID                           uint32
+#  1     SkillLine                    uint32   FK to SkillLine.dbc
+#  2     Spell                        uint32   FK to Spell.dbc
+#  3     RaceMask                     uint32
+#  4     ClassMask                    uint32
+#  5     ExcludeRace                  uint32
+#  6     ExcludeClass                 uint32
+#  7     MinSkillLineRank             uint32
+#  8     SupercededBySpell            uint32   FK to Spell.dbc
+#  9     AcquireMethod                uint32   1=learned on skill, 2=trainer
+# 10     TrivialSkillLineRankHigh     uint32
+# 11     TrivialSkillLineRankLow      uint32
+# 12     CharacterPoints0             uint32
+# 13     CharacterPoints1             uint32
+# Total: 14 fields = 56 bytes
+# ---------------------------------------------------------------------------
+_SKILLLINEABILITY_FIELD_COUNT = 14
+_SKILLLINEABILITY_RECORD_SIZE = _SKILLLINEABILITY_FIELD_COUNT * 4  # 56
+
+
+def _build_skilllineability_record(
+    ability_id,
+    skill_line,
+    spell_id,
+    race_mask=0,
+    class_mask=0,
+    exclude_race=0,
+    exclude_class=0,
+    min_skill_rank=0,
+    superceded_by=0,
+    acquire_method=1,
+    trivial_high=0,
+    trivial_low=0,
+    character_points=(0, 0),
+):
+    """
+    Build a raw 56-byte SkillLineAbility.dbc record for WotLK 3.3.5.
+
+    Args:
+        ability_id: Unique ID for this skill-line-ability row.
+        skill_line: SkillLine.dbc ID this ability belongs to.
+        spell_id: Spell.dbc ID taught by this skill line.
+        race_mask: Allowed race bitmask (0 = all races).
+        class_mask: Allowed class bitmask (0 = all classes).
+        exclude_race: Excluded race bitmask.
+        exclude_class: Excluded class bitmask.
+        min_skill_rank: Minimum skill rank to learn.
+        superceded_by: Spell ID that replaces this ability at higher rank.
+        acquire_method: 1=learned when skill learned, 2=learned at trainer.
+        trivial_high: Skill rank at which this becomes trivial (grey).
+        trivial_low: Skill rank below which this cannot be learned.
+        character_points: Tuple of (points0, points1) talent point costs.
+
+    Returns:
+        bytes: 56-byte binary record.
+    """
+    buf = bytearray()
+
+    # 0: ID
+    buf += struct.pack('<I', ability_id)
+    # 1: SkillLine
+    buf += struct.pack('<I', skill_line)
+    # 2: Spell
+    buf += struct.pack('<I', spell_id)
+    # 3: RaceMask
+    buf += struct.pack('<I', race_mask)
+    # 4: ClassMask
+    buf += struct.pack('<I', class_mask)
+    # 5: ExcludeRace
+    buf += struct.pack('<I', exclude_race)
+    # 6: ExcludeClass
+    buf += struct.pack('<I', exclude_class)
+    # 7: MinSkillLineRank
+    buf += struct.pack('<I', min_skill_rank)
+    # 8: SupercededBySpell
+    buf += struct.pack('<I', superceded_by)
+    # 9: AcquireMethod
+    buf += struct.pack('<I', acquire_method)
+    # 10: TrivialSkillLineRankHigh
+    buf += struct.pack('<I', trivial_high)
+    # 11: TrivialSkillLineRankLow
+    buf += struct.pack('<I', trivial_low)
+    # 12-13: CharacterPoints[2]
+    buf += struct.pack('<2I', character_points[0], character_points[1])
+
+    assert len(buf) == _SKILLLINEABILITY_RECORD_SIZE, (
+        "SkillLineAbility record size mismatch: expected {}, got {}".format(
+            _SKILLLINEABILITY_RECORD_SIZE, len(buf)
+        )
+    )
+    return bytes(buf)
+
+
+def register_skill_line_ability(
+    dbc_dir,
+    skill_line,
+    spell_id,
+    ability_id=None,
+    race_mask=0,
+    class_mask=0,
+    min_skill_rank=0,
+    superceded_by=0,
+    acquire_method=1,
+    trivial_high=0,
+    trivial_low=0,
+):
+    """
+    Register a new entry in SkillLineAbility.dbc.
+
+    Links a spell to a skill line so the client knows which professions,
+    weapon skills, or class skills include this spell.
+
+    Args:
+        dbc_dir: Path to directory containing SkillLineAbility.dbc.
+        skill_line: SkillLine.dbc ID (e.g. 164=Blacksmithing, 333=Enchanting).
+        spell_id: Spell.dbc ID to associate with this skill line.
+        ability_id: Specific row ID or None for auto (max_id + 1).
+        race_mask: Allowed race bitmask (0 = all races).
+        class_mask: Allowed class bitmask (0 = all classes).
+        min_skill_rank: Minimum skill rank required to learn.
+        superceded_by: Spell ID that replaces this at higher rank (0 = none).
+        acquire_method: 1=learned on skill, 2=learned at trainer.
+        trivial_high: Skill rank where this goes grey (0 = never).
+        trivial_low: Minimum skill rank threshold (0 = none).
+
+    Returns:
+        int: The assigned ability ID.
+    """
+    filepath = os.path.join(dbc_dir, 'SkillLineAbility.dbc')
+    dbc = DBCInjector(filepath)
+
+    if ability_id is None:
+        ability_id = dbc.get_max_id() + 1
+
+    record = _build_skilllineability_record(
+        ability_id=ability_id,
+        skill_line=skill_line,
+        spell_id=spell_id,
+        race_mask=race_mask,
+        class_mask=class_mask,
+        min_skill_rank=min_skill_rank,
+        superceded_by=superceded_by,
+        acquire_method=acquire_method,
+        trivial_high=trivial_high,
+        trivial_low=trivial_low,
+    )
+
+    dbc.records.append(record)
+    dbc.write(filepath)
+
+    return ability_id
+
+
+# ---------------------------------------------------------------------------
+# Item.dbc field layout (3.0.2.9056 - 3.3.5.12340)
+# Source: wdbx/dbd/definitions/Item.dbd
+#
+# Index  Field                        Type     Notes
+# -----  ---------------------------  -------  -----
+#  0     ID                           uint32
+#  1     ClassID                      uint32   Item class (0=consumable, 2=weapon, 4=armor)
+#  2     SubclassID                   uint32   Subclass within class
+#  3     Sound_override_subclassID    uint32   Usually -1 (0xFFFFFFFF)
+#  4     Material                     uint32   0=undefined, 1=metal, 2=wood, etc.
+#  5     DisplayInfoID                uint32   FK to ItemDisplayInfo.dbc
+#  6     InventoryType                uint32   0=non-equip, 1=head, 5=chest, etc.
+#  7     SheatheType                  uint32   0=none, 1=2h-weapon, 2=staff, etc.
+# Total: 8 fields = 32 bytes
+# ---------------------------------------------------------------------------
+_ITEM_FIELD_COUNT = 8
+_ITEM_RECORD_SIZE = _ITEM_FIELD_COUNT * 4  # 32
+
+
+def _build_item_record(
+    item_id,
+    class_id=0,
+    subclass_id=0,
+    sound_override=-1,
+    material=0,
+    display_info_id=0,
+    inventory_type=0,
+    sheathe_type=0,
+):
+    """
+    Build a raw 32-byte Item.dbc record for WotLK 3.3.5.
+
+    Args:
+        item_id: Unique item ID.
+        class_id: Item class (0=consumable, 2=weapon, 4=armor).
+        subclass_id: Subclass within class.
+        sound_override: Sound override subclass (-1 = default).
+        material: Material type (0=undefined, 1=metal, 2=wood, etc.).
+        display_info_id: FK to ItemDisplayInfo.dbc.
+        inventory_type: Equipment slot (0=non-equip, 1=head, 5=chest, etc.).
+        sheathe_type: Sheathe type (0=none, 1=2h-weapon, 2=staff, etc.).
+
+    Returns:
+        bytes: 32-byte binary record.
+    """
+    buf = bytearray()
+
+    # 0: ID
+    buf += struct.pack('<I', item_id)
+    # 1: ClassID
+    buf += struct.pack('<I', class_id)
+    # 2: SubclassID
+    buf += struct.pack('<I', subclass_id)
+    # 3: Sound_override_subclassID (signed -1 stored as 0xFFFFFFFF)
+    buf += struct.pack('<i', sound_override)
+    # 4: Material
+    buf += struct.pack('<I', material)
+    # 5: DisplayInfoID
+    buf += struct.pack('<I', display_info_id)
+    # 6: InventoryType
+    buf += struct.pack('<I', inventory_type)
+    # 7: SheatheType
+    buf += struct.pack('<I', sheathe_type)
+
+    assert len(buf) == _ITEM_RECORD_SIZE, (
+        "Item record size mismatch: expected {}, got {}".format(
+            _ITEM_RECORD_SIZE, len(buf))
+    )
+    return bytes(buf)
+
+
+def register_item(
+    dbc_dir,
+    item_id=None,
+    class_id=0,
+    subclass_id=0,
+    material=0,
+    display_info_id=0,
+    inventory_type=0,
+    sheathe_type=0,
+    sound_override=-1,
+):
+    """
+    Register a new item in Item.dbc.
+
+    Args:
+        dbc_dir: Path to directory containing Item.dbc.
+        item_id: Specific item ID or None for auto (max_id + 1).
+        class_id: Item class (0=consumable, 2=weapon, 4=armor).
+        subclass_id: Subclass within class.
+        material: Material type (0=undefined, 1=metal, 2=wood, etc.).
+        display_info_id: FK to ItemDisplayInfo.dbc.
+        inventory_type: Equipment slot (0=non-equip, 1=head, 5=chest, etc.).
+        sheathe_type: Sheathe type (0=none, 1=2h-weapon, etc.).
+        sound_override: Sound override subclass (-1 = default).
+
+    Returns:
+        int: The assigned item ID.
+    """
+    filepath = os.path.join(dbc_dir, 'Item.dbc')
+    dbc = DBCInjector(filepath)
+
+    if item_id is None:
+        item_id = dbc.get_max_id() + 1
+
+    record = _build_item_record(
+        item_id=item_id,
+        class_id=class_id,
+        subclass_id=subclass_id,
+        sound_override=sound_override,
+        material=material,
+        display_info_id=display_info_id,
+        inventory_type=inventory_type,
+        sheathe_type=sheathe_type,
+    )
+
+    dbc.records.append(record)
+    dbc.write(filepath)
+
+    return item_id
+
+
+# ---------------------------------------------------------------------------
+# ItemSet.dbc field layout (3.0.1.8303 - 3.3.5.12340)
+# Source: wdbx/dbd/definitions/ItemSet.dbd
+#
+# Index  Field                        Type       Count  Notes
+# -----  ---------------------------  ---------  -----  -----
+#  0     ID                           uint32
+#  1-17  Name_lang                    locstr     17     Set name
+# 18-34  ItemID                       uint32     [17]   Item IDs in set (0=unused)
+# 35-42  SetSpellID                   uint32     [8]    Bonus spell IDs
+# 43-50  SetThreshold                 uint32     [8]    Piece count for each bonus
+# 51     RequiredSkill                uint32     FK to SkillLine.dbc (0=none)
+# 52     RequiredSkillRank            uint32     Required skill level
+# Total: 53 fields = 212 bytes
+# ---------------------------------------------------------------------------
+_ITEMSET_FIELD_COUNT = 53
+_ITEMSET_RECORD_SIZE = _ITEMSET_FIELD_COUNT * 4  # 212
+
+
+def _build_itemset_record(
+    dbc,
+    set_id,
+    name,
+    item_ids,
+    bonuses=None,
+    required_skill=0,
+    required_skill_rank=0,
+):
+    """
+    Build a raw 212-byte ItemSet.dbc record for WotLK 3.3.5.
+
+    Args:
+        dbc: DBCInjector instance (for string block).
+        set_id: Unique set ID.
+        name: Set display name.
+        item_ids: List of up to 17 item IDs.
+        bonuses: List of (threshold, spell_id) tuples, up to 8.
+        required_skill: FK to SkillLine.dbc (0=none).
+        required_skill_rank: Required skill level.
+
+    Returns:
+        bytes: 212-byte binary record.
+    """
+    if bonuses is None:
+        bonuses = []
+
+    buf = bytearray()
+
+    # 0: ID
+    buf += struct.pack('<I', set_id)
+    # 1-17: Name_lang (locstring, 17 uint32)
+    name_offset = dbc.add_string(name)
+    buf += _pack_locstring(name_offset)
+    # 18-34: ItemID[17]
+    padded_items = list(item_ids[:17]) + [0] * (17 - min(len(item_ids), 17))
+    buf += struct.pack('<17I', *padded_items)
+    # 35-42: SetSpellID[8]
+    spell_ids = [0] * 8
+    thresholds = [0] * 8
+    for i, (threshold, spell_id) in enumerate(bonuses[:8]):
+        spell_ids[i] = spell_id
+        thresholds[i] = threshold
+    buf += struct.pack('<8I', *spell_ids)
+    # 43-50: SetThreshold[8]
+    buf += struct.pack('<8I', *thresholds)
+    # 51: RequiredSkill
+    buf += struct.pack('<I', required_skill)
+    # 52: RequiredSkillRank
+    buf += struct.pack('<I', required_skill_rank)
+
+    assert len(buf) == _ITEMSET_RECORD_SIZE, (
+        "ItemSet record size mismatch: expected {}, got {}".format(
+            _ITEMSET_RECORD_SIZE, len(buf))
+    )
+    return bytes(buf)
+
+
+def register_item_set(
+    dbc_dir,
+    name,
+    item_ids,
+    bonuses=None,
+    set_id=None,
+    required_skill=0,
+    required_skill_rank=0,
+):
+    """
+    Register a new item set in ItemSet.dbc.
+
+    Args:
+        dbc_dir: Path to directory containing ItemSet.dbc.
+        name: Set display name (e.g. "Battlegear of Wrath").
+        item_ids: List of up to 17 item IDs in the set.
+        bonuses: Optional list of (piece_count, spell_id) tuples (up to 8).
+        set_id: Specific set ID or None for auto (max_id + 1).
+        required_skill: FK to SkillLine.dbc (0=none).
+        required_skill_rank: Required skill level (0=none).
+
+    Returns:
+        int: The assigned set ID.
+    """
+    filepath = os.path.join(dbc_dir, 'ItemSet.dbc')
+    dbc = DBCInjector(filepath)
+
+    if set_id is None:
+        set_id = dbc.get_max_id() + 1
+
+    record = _build_itemset_record(
+        dbc=dbc,
+        set_id=set_id,
+        name=name,
+        item_ids=item_ids,
+        bonuses=bonuses,
+        required_skill=required_skill,
+        required_skill_rank=required_skill_rank,
+    )
+
+    dbc.records.append(record)
+    dbc.write(filepath)
+
+    return set_id
+
+
+# ---------------------------------------------------------------------------
+# SoundEntries.dbc field layout (3.1.0.9767 - 3.3.5.12340)
+# Source: wdbx/dbd/definitions/SoundEntries.dbd
+#
+# Index  Field                        Type     Count  Notes
+# -----  ---------------------------  -------  -----  -----
+#  0     ID                           uint32
+#  1     SoundType                    uint32
+#  2     Name                         string
+#  3-12  File                         string   [10]
+# 13-22  Freq                         uint32   [10]
+# 23     DirectoryBase                string
+# 24     VolumeFloat                  float
+# 25     Flags                        uint32
+# 26     MinDistance                   float
+# 27     DistanceCutoff                float
+# 28     EAXDef                       uint32
+# 29     SoundEntriesAdvancedID       uint32
+# Total: 30 fields = 120 bytes
+# ---------------------------------------------------------------------------
+_SOUNDENTRIES_FIELD_COUNT = 30
+_SOUNDENTRIES_RECORD_SIZE = _SOUNDENTRIES_FIELD_COUNT * 4  # 120
+
+
+def _build_soundentries_record(
+    dbc,
+    sound_id,
+    sound_type,
+    name,
+    files,
+    directory_base="",
+    volume=1.0,
+    flags=0,
+    min_distance=8.0,
+    max_distance=45.0,
+    eax_def=0,
+    advanced_id=0,
+    frequencies=None,
+):
+    """
+    Build a raw 120-byte SoundEntries.dbc record for WotLK 3.3.5.
+
+    Args:
+        dbc: DBCInjector instance (for string block).
+        sound_id: Unique sound entry ID.
+        sound_type: 1=spell, 2=ambient, 6=zone music, 50=zone ambience.
+        name: Internal name for this sound entry.
+        files: List of up to 10 sound file names.
+        directory_base: Base directory path for files.
+        volume: Volume multiplier (0.0-1.0, default 1.0).
+        flags: Playback flags.
+        min_distance: Minimum audible distance (default 8.0).
+        max_distance: Maximum audible distance (default 45.0).
+        eax_def: EAX environment preset.
+        advanced_id: FK to SoundEntriesAdvanced.dbc.
+        frequencies: List of playback frequency weights per file.
+
+    Returns:
+        bytes: 120-byte binary record.
+    """
+    if frequencies is None:
+        # Default: equal weight (1) for each file provided, 0 for empty slots
+        frequencies = [1 if i < len(files) else 0 for i in range(10)]
+
+    buf = bytearray()
+
+    # 0: ID
+    buf += struct.pack('<I', sound_id)
+    # 1: SoundType
+    buf += struct.pack('<I', sound_type)
+    # 2: Name (string offset)
+    buf += struct.pack('<I', dbc.add_string(name))
+    # 3-12: File[10] (string offsets)
+    for i in range(10):
+        if i < len(files) and files[i]:
+            buf += struct.pack('<I', dbc.add_string(files[i]))
+        else:
+            buf += struct.pack('<I', 0)
+    # 13-22: Freq[10]
+    padded_freq = list(frequencies[:10]) + [0] * (10 - min(len(frequencies), 10))
+    buf += struct.pack('<10I', *padded_freq)
+    # 23: DirectoryBase (string offset)
+    buf += struct.pack('<I', dbc.add_string(directory_base))
+    # 24: VolumeFloat
+    buf += struct.pack('<f', volume)
+    # 25: Flags
+    buf += struct.pack('<I', flags)
+    # 26: MinDistance
+    buf += struct.pack('<f', min_distance)
+    # 27: DistanceCutoff
+    buf += struct.pack('<f', max_distance)
+    # 28: EAXDef
+    buf += struct.pack('<I', eax_def)
+    # 29: SoundEntriesAdvancedID
+    buf += struct.pack('<I', advanced_id)
+
+    assert len(buf) == _SOUNDENTRIES_RECORD_SIZE, (
+        "SoundEntries record size mismatch: expected {}, got {}".format(
+            _SOUNDENTRIES_RECORD_SIZE, len(buf))
+    )
+    return bytes(buf)
+
+
+def register_sound_entry(
+    dbc_dir,
+    name,
+    sound_type,
+    files,
+    directory_base="",
+    sound_id=None,
+    volume=1.0,
+    min_distance=8.0,
+    max_distance=45.0,
+    flags=0,
+    frequencies=None,
+):
+    """
+    Register a new sound entry in SoundEntries.dbc.
+
+    Args:
+        dbc_dir: Path to directory containing SoundEntries.dbc.
+        name: Internal name for the sound entry.
+        sound_type: 1=spell, 2=ambient, 6=zone_music, 50=zone_ambience.
+        files: List of up to 10 sound file names.
+        directory_base: Base directory path for files (e.g. "Sound\\Music\\").
+        sound_id: Specific sound ID or None for auto (max_id + 1).
+        volume: Volume multiplier (0.0-1.0, default 1.0).
+        min_distance: Min audible distance (default 8.0).
+        max_distance: Max audible distance (default 45.0).
+        flags: Playback flags.
+        frequencies: Optional list of playback weights per file.
+
+    Returns:
+        int: The assigned sound entry ID.
+    """
+    filepath = os.path.join(dbc_dir, 'SoundEntries.dbc')
+    dbc = DBCInjector(filepath)
+
+    if sound_id is None:
+        sound_id = dbc.get_max_id() + 1
+
+    record = _build_soundentries_record(
+        dbc=dbc,
+        sound_id=sound_id,
+        sound_type=sound_type,
+        name=name,
+        files=files,
+        directory_base=directory_base,
+        volume=volume,
+        flags=flags,
+        min_distance=min_distance,
+        max_distance=max_distance,
+        frequencies=frequencies,
+    )
+
+    dbc.records.append(record)
+    dbc.write(filepath)
+
+    return sound_id
+
+
+# ---------------------------------------------------------------------------
+# CreatureDisplayInfo.dbc field layout (3.0.1.8820 - 3.3.5.12340)
+# Source: wdbx/dbd/definitions/CreatureDisplayInfo.dbd
+#
+# Index  Field                        Type     Count  Notes
+# -----  ---------------------------  -------  -----  -----
+#  0     ID                           uint32
+#  1     ModelID                      uint32   FK to CreatureModelData.dbc
+#  2     SoundID                      uint32   FK to CreatureSoundData.dbc
+#  3     ExtendedDisplayInfoID        uint32   FK to CreatureDisplayInfoExtra.dbc
+#  4     CreatureModelScale           float    Model scale multiplier
+#  5     CreatureModelAlpha           uint32   Transparency (255=opaque)
+#  6-8   TextureVariation             string   [3]  Texture override paths
+#  9     PortraitTextureName          string        Portrait texture path
+# 10     SizeClass                    uint32   1=small, 2=medium, 3=large
+# 11     BloodID                      uint32
+# 12     NPCSoundID                   uint32   FK to NPCSounds.dbc
+# 13     ParticleColorID              uint32   FK to ParticleColor.dbc
+# 14     CreatureGeosetData           uint32   Geoset flags
+# 15     ObjectEffectPackageID        uint32   FK to ObjectEffectPackage.dbc
+# Total: 16 fields (counting TextureVariation as 3 + PortraitTextureName as 1)
+# But from .dbd: ID(1) + ModelID(1) + SoundID(1) + ExtendedDisplayInfoID(1) +
+#   scale(1) + alpha(1) + TextureVariation[3](3) + PortraitTextureName(1) +
+#   SizeClass(1) + BloodID(1) + NPCSoundID(1) + ParticleColorID(1) +
+#   CreatureGeosetData(1) + ObjectEffectPackageID(1) = 16 fields = 64 bytes
+# ---------------------------------------------------------------------------
+_CREATUREDISPLAYINFO_FIELD_COUNT = 16
+_CREATUREDISPLAYINFO_RECORD_SIZE = _CREATUREDISPLAYINFO_FIELD_COUNT * 4  # 64
+
+
+def _build_creature_display_record(
+    dbc,
+    display_id,
+    model_id,
+    sound_id=0,
+    extended_display_id=0,
+    scale=1.0,
+    alpha=255,
+    textures=None,
+    portrait_texture=None,
+    size_class=2,
+    blood_id=0,
+    npc_sound_id=0,
+    particle_color_id=0,
+    geoset_data=0,
+    effect_package_id=0,
+):
+    """Build a raw 56-byte CreatureDisplayInfo.dbc record for WotLK 3.3.5."""
+    if textures is None:
+        textures = []
+
+    buf = bytearray()
+
+    # 0: ID
+    buf += struct.pack('<I', display_id)
+    # 1: ModelID
+    buf += struct.pack('<I', model_id)
+    # 2: SoundID
+    buf += struct.pack('<I', sound_id)
+    # 3: ExtendedDisplayInfoID
+    buf += struct.pack('<I', extended_display_id)
+    # 4: CreatureModelScale
+    buf += struct.pack('<f', scale)
+    # 5: CreatureModelAlpha
+    buf += struct.pack('<I', alpha)
+    # 6-8: TextureVariation[3]
+    for i in range(3):
+        if i < len(textures) and textures[i]:
+            buf += struct.pack('<I', dbc.add_string(textures[i]))
+        else:
+            buf += struct.pack('<I', 0)
+    # 9: PortraitTextureName
+    buf += struct.pack('<I', dbc.add_string(portrait_texture) if portrait_texture else 0)
+    # 10: SizeClass
+    buf += struct.pack('<I', size_class)
+    # 11: BloodID
+    buf += struct.pack('<I', blood_id)
+    # 12: NPCSoundID
+    buf += struct.pack('<I', npc_sound_id)
+    # 13: ParticleColorID
+    buf += struct.pack('<I', particle_color_id)
+    # 14: CreatureGeosetData -- wait, that would be index 14 but we only have 14 fields (0..13)
+    # Recount: 0=ID, 1=ModelID, 2=SoundID, 3=ExtendedDisplayInfoID, 4=Scale,
+    #   5=Alpha, 6=Tex0, 7=Tex1, 8=Tex2, 9=Portrait, 10=SizeClass, 11=BloodID,
+    #   12=NPCSoundID, 13=ParticleColorID = 14 fields.
+    # But the .dbd also has CreatureGeosetData and ObjectEffectPackageID after
+    # ParticleColorID for this build range. Let me recount from the .dbd:
+    # BUILD 3.0.1.8820-3.3.5.12340:
+    #   ID, ModelID, SoundID, ExtendedDisplayInfoID, CreatureModelScale,
+    #   CreatureModelAlpha, TextureVariation[3], PortraitTextureName, SizeClass,
+    #   BloodID, NPCSoundID, ParticleColorID, CreatureGeosetData,
+    #   ObjectEffectPackageID
+    # That's 1+1+1+1+1+1+3+1+1+1+1+1+1+1 = 16 fields = 64 bytes!
+    # The earlier build (0.5.3) only had 8 fields. The WotLK build has 16.
+    buf += struct.pack('<I', geoset_data)
+    # 15: ObjectEffectPackageID
+    buf += struct.pack('<I', effect_package_id)
+
+    # Actually 16 fields = 64 bytes
+    expected = 16 * 4  # 64
+    assert len(buf) == expected, (
+        "CreatureDisplayInfo record size mismatch: expected {}, got {}".format(
+            expected, len(buf))
+    )
+    return bytes(buf)
+
+
+def register_creature_display(
+    dbc_dir,
+    model_id,
+    display_id=None,
+    sound_id=0,
+    scale=1.0,
+    alpha=255,
+    textures=None,
+    portrait_texture=None,
+    size_class=2,
+    blood_id=0,
+):
+    """
+    Register a new creature display in CreatureDisplayInfo.dbc.
+
+    Args:
+        dbc_dir: Path to directory containing CreatureDisplayInfo.dbc.
+        model_id: FK to CreatureModelData.dbc.
+        display_id: Specific display ID or None for auto (max_id + 1).
+        sound_id: FK to CreatureSoundData.dbc (0=none).
+        scale: Model scale multiplier (default 1.0).
+        alpha: Transparency level (255=opaque, default 255).
+        textures: Optional list of up to 3 texture override paths.
+        portrait_texture: Optional portrait texture path.
+        size_class: 1=small, 2=medium, 3=large (default 2).
+        blood_id: Blood splash type (default 0).
+
+    Returns:
+        int: The assigned display ID.
+    """
+    filepath = os.path.join(dbc_dir, 'CreatureDisplayInfo.dbc')
+    dbc = DBCInjector(filepath)
+
+    if display_id is None:
+        display_id = dbc.get_max_id() + 1
+
+    record = _build_creature_display_record(
+        dbc=dbc,
+        display_id=display_id,
+        model_id=model_id,
+        sound_id=sound_id,
+        scale=scale,
+        alpha=alpha,
+        textures=textures,
+        portrait_texture=portrait_texture,
+        size_class=size_class,
+        blood_id=blood_id,
+    )
+
+    dbc.records.append(record)
+    dbc.write(filepath)
+
+    return display_id
+
+
+# ---------------------------------------------------------------------------
+# CreatureModelData.dbc field layout (3.1.0.9767 - 3.3.5.12340)
+# Source: wdbx/dbd/definitions/CreatureModelData.dbd
+#
+# Index  Field                        Type     Notes
+# -----  ---------------------------  -------  -----
+#  0     ID                           uint32
+#  1     Flags                        uint32
+#  2     ModelName                    string   Path to .m2 file
+#  3     SizeClass                    uint32
+#  4     ModelScale                   float
+#  5     BloodID                      uint32
+#  6     FootprintTextureID           uint32
+#  7     FootprintTextureLength       float
+#  8     FootprintTextureWidth        float
+#  9     FootprintParticleScale       float
+# 10     FoleyMaterialID              uint32
+# 11     FootstepShakeSize            uint32
+# 12     DeathThudShakeSize           uint32
+# 13     SoundID                      uint32
+# 14     CollisionWidth               float
+# 15     CollisionHeight              float
+# 16     MountHeight                  float
+# 17     GeoBoxMinX                   float
+# 18     GeoBoxMinY                   float
+# 19     GeoBoxMinZ                   float
+# 20     GeoBoxMaxX                   float
+# 21     GeoBoxMaxY                   float
+# 22     GeoBoxMaxZ                   float
+# 23     WorldEffectScale             float
+# 24     AttachedEffectScale          float
+# 25     MissileCollisionRadius       float
+# 26     MissileCollisionPush         float
+# 27     MissileCollisionRaise        float
+# Total: 28 fields = 112 bytes
+# ---------------------------------------------------------------------------
+_CREATUREMODELDATA_FIELD_COUNT = 28
+_CREATUREMODELDATA_RECORD_SIZE = _CREATUREMODELDATA_FIELD_COUNT * 4  # 112
+
+
+def _build_creature_model_record(
+    dbc,
+    model_id,
+    model_path,
+    flags=0,
+    size_class=2,
+    model_scale=1.0,
+    blood_id=0,
+    footprint_texture_id=0,
+    footprint_length=0.0,
+    footprint_width=0.0,
+    footprint_particle_scale=1.0,
+    foley_material_id=0,
+    footstep_shake=0,
+    death_thud_shake=0,
+    sound_id=0,
+    collision_width=0.5,
+    collision_height=2.0,
+    mount_height=0.0,
+    geo_box_min=(0.0, 0.0, 0.0),
+    geo_box_max=(0.0, 0.0, 0.0),
+    world_effect_scale=1.0,
+    attached_effect_scale=1.0,
+    missile_collision_radius=0.0,
+    missile_collision_push=0.0,
+    missile_collision_raise=0.0,
+):
+    """Build a raw 112-byte CreatureModelData.dbc record for WotLK 3.3.5."""
+    buf = bytearray()
+
+    # 0: ID
+    buf += struct.pack('<I', model_id)
+    # 1: Flags
+    buf += struct.pack('<I', flags)
+    # 2: ModelName (string offset)
+    buf += struct.pack('<I', dbc.add_string(model_path))
+    # 3: SizeClass
+    buf += struct.pack('<I', size_class)
+    # 4: ModelScale
+    buf += struct.pack('<f', model_scale)
+    # 5: BloodID
+    buf += struct.pack('<I', blood_id)
+    # 6: FootprintTextureID
+    buf += struct.pack('<I', footprint_texture_id)
+    # 7: FootprintTextureLength
+    buf += struct.pack('<f', footprint_length)
+    # 8: FootprintTextureWidth
+    buf += struct.pack('<f', footprint_width)
+    # 9: FootprintParticleScale
+    buf += struct.pack('<f', footprint_particle_scale)
+    # 10: FoleyMaterialID
+    buf += struct.pack('<I', foley_material_id)
+    # 11: FootstepShakeSize
+    buf += struct.pack('<I', footstep_shake)
+    # 12: DeathThudShakeSize
+    buf += struct.pack('<I', death_thud_shake)
+    # 13: SoundID
+    buf += struct.pack('<I', sound_id)
+    # 14: CollisionWidth
+    buf += struct.pack('<f', collision_width)
+    # 15: CollisionHeight
+    buf += struct.pack('<f', collision_height)
+    # 16: MountHeight
+    buf += struct.pack('<f', mount_height)
+    # 17-19: GeoBoxMin (x, y, z)
+    buf += struct.pack('<fff', *geo_box_min)
+    # 20-22: GeoBoxMax (x, y, z)
+    buf += struct.pack('<fff', *geo_box_max)
+    # 23: WorldEffectScale
+    buf += struct.pack('<f', world_effect_scale)
+    # 24: AttachedEffectScale
+    buf += struct.pack('<f', attached_effect_scale)
+    # 25: MissileCollisionRadius
+    buf += struct.pack('<f', missile_collision_radius)
+    # 26: MissileCollisionPush
+    buf += struct.pack('<f', missile_collision_push)
+    # 27: MissileCollisionRaise
+    buf += struct.pack('<f', missile_collision_raise)
+
+    assert len(buf) == _CREATUREMODELDATA_RECORD_SIZE, (
+        "CreatureModelData record size mismatch: expected {}, got {}".format(
+            _CREATUREMODELDATA_RECORD_SIZE, len(buf))
+    )
+    return bytes(buf)
+
+
+def register_creature_model(
+    dbc_dir,
+    model_path,
+    model_id=None,
+    collision_width=0.5,
+    collision_height=2.0,
+    model_scale=1.0,
+    bounding_box=None,
+):
+    """
+    Register a new creature model in CreatureModelData.dbc.
+
+    Args:
+        dbc_dir: Path to directory containing CreatureModelData.dbc.
+        model_path: Path to .m2 model file (e.g. "Creature\\FelOrc\\FelOrc.m2").
+        model_id: Specific model ID or None for auto (max_id + 1).
+        collision_width: Collision capsule width (default 0.5).
+        collision_height: Collision capsule height (default 2.0).
+        model_scale: Model scale (default 1.0).
+        bounding_box: Optional ((min_x,min_y,min_z), (max_x,max_y,max_z)) tuple.
+
+    Returns:
+        int: The assigned model ID.
+    """
+    filepath = os.path.join(dbc_dir, 'CreatureModelData.dbc')
+    dbc = DBCInjector(filepath)
+
+    if model_id is None:
+        model_id = dbc.get_max_id() + 1
+
+    geo_min = (0.0, 0.0, 0.0)
+    geo_max = (0.0, 0.0, 0.0)
+    if bounding_box is not None:
+        geo_min = tuple(bounding_box[0])
+        geo_max = tuple(bounding_box[1])
+
+    record = _build_creature_model_record(
+        dbc=dbc,
+        model_id=model_id,
+        model_path=model_path,
+        collision_width=collision_width,
+        collision_height=collision_height,
+        model_scale=model_scale,
+        geo_box_min=geo_min,
+        geo_box_max=geo_max,
+    )
+
+    dbc.records.append(record)
+    dbc.write(filepath)
+
+    return model_id
+
+
+# ---------------------------------------------------------------------------
+# Talent.dbc field layout (3.0.1.8622 - 3.3.5.12340)
+# Source: wdbx/dbd/definitions/Talent.dbd
+#
+# Index  Field                        Type     Count  Notes
+# -----  ---------------------------  -------  -----  -----
+#  0     ID                           uint32
+#  1     TabID                        uint32   FK to TalentTab.dbc
+#  2     TierID                       uint32   Row (0-10)
+#  3     ColumnIndex                  uint32   Column (0-3)
+#  4-12  SpellRank                    uint32   [9]  Spell ID per rank
+# 13-15  PrereqTalent                 uint32   [3]  Prerequisite talent IDs
+# 16-18  PrereqRank                   uint32   [3]  Required rank of prereqs
+# 19     Flags                        uint32
+# 20     RequiredSpellID              uint32
+# 21-22  CategoryMask                 uint32   [2]
+# Total: 23 fields = 92 bytes
+# ---------------------------------------------------------------------------
+_TALENT_FIELD_COUNT = 23
+_TALENT_RECORD_SIZE = _TALENT_FIELD_COUNT * 4  # 92
+
+
+def _build_talent_record(
+    talent_id,
+    tab_id,
+    tier,
+    column,
+    spell_ranks,
+    prereq_talents=None,
+    flags=0,
+    required_spell_id=0,
+):
+    """Build a raw 92-byte Talent.dbc record for WotLK 3.3.5."""
+    if prereq_talents is None:
+        prereq_talents = []
+
+    buf = bytearray()
+
+    # 0: ID
+    buf += struct.pack('<I', talent_id)
+    # 1: TabID
+    buf += struct.pack('<I', tab_id)
+    # 2: TierID
+    buf += struct.pack('<I', tier)
+    # 3: ColumnIndex
+    buf += struct.pack('<I', column)
+    # 4-12: SpellRank[9]
+    padded_ranks = list(spell_ranks[:9]) + [0] * (9 - min(len(spell_ranks), 9))
+    buf += struct.pack('<9I', *padded_ranks)
+    # 13-15: PrereqTalent[3]
+    prereq_ids = [0, 0, 0]
+    prereq_ranks = [0, 0, 0]
+    for i, (tid, rank) in enumerate(prereq_talents[:3]):
+        prereq_ids[i] = tid
+        prereq_ranks[i] = rank
+    buf += struct.pack('<3I', *prereq_ids)
+    # 16-18: PrereqRank[3]
+    buf += struct.pack('<3I', *prereq_ranks)
+    # 19: Flags
+    buf += struct.pack('<I', flags)
+    # 20: RequiredSpellID
+    buf += struct.pack('<I', required_spell_id)
+    # 21-22: CategoryMask[2]
+    buf += struct.pack('<2I', 0, 0)
+
+    assert len(buf) == _TALENT_RECORD_SIZE, (
+        "Talent record size mismatch: expected {}, got {}".format(
+            _TALENT_RECORD_SIZE, len(buf))
+    )
+    return bytes(buf)
+
+
+def register_talent(
+    dbc_dir,
+    tab_id,
+    tier,
+    column,
+    spell_ranks,
+    talent_id=None,
+    prereq_talents=None,
+    required_spell_id=0,
+):
+    """
+    Register a new talent in Talent.dbc.
+
+    Args:
+        dbc_dir: Path to directory containing Talent.dbc.
+        tab_id: FK to TalentTab.dbc.
+        tier: Row in the talent tree (0-10).
+        column: Column in the talent tree (0-3).
+        spell_ranks: List of up to 9 spell IDs (one per talent rank).
+        talent_id: Specific talent ID or None for auto (max_id + 1).
+        prereq_talents: Optional list of (talent_id, required_rank) tuples (up to 3).
+        required_spell_id: Spell required to learn this talent (0=none).
+
+    Returns:
+        int: The assigned talent ID.
+    """
+    filepath = os.path.join(dbc_dir, 'Talent.dbc')
+    dbc = DBCInjector(filepath)
+
+    if talent_id is None:
+        talent_id = dbc.get_max_id() + 1
+
+    record = _build_talent_record(
+        talent_id=talent_id,
+        tab_id=tab_id,
+        tier=tier,
+        column=column,
+        spell_ranks=spell_ranks,
+        prereq_talents=prereq_talents,
+        required_spell_id=required_spell_id,
+    )
+
+    dbc.records.append(record)
+    dbc.write(filepath)
+
+    return talent_id
+
+
+# ---------------------------------------------------------------------------
+# TalentTab.dbc field layout (3.0.1.8622 - 3.3.5.12340)
+# Source: wdbx/dbd/definitions/TalentTab.dbd
+#
+# Index  Field                        Type     Count  Notes
+# -----  ---------------------------  -------  -----  -----
+#  0     ID                           uint32
+#  1-17  Name_lang                    locstr   17     Tab name (e.g. "Fire")
+# 18     SpellIconID                  uint32   FK to SpellIcon.dbc
+# 19     RaceMask                     uint32   0=all races
+# 20     ClassMask                    uint32   Class bitmask
+# 21     CategoryEnumID               uint32   Tab category
+# 22     OrderIndex                   uint32   Display order (0, 1, 2)
+# 23     BackgroundFile               string   Tab background texture path
+# Total: 24 fields = 96 bytes
+# ---------------------------------------------------------------------------
+_TALENTTAB_FIELD_COUNT = 24
+_TALENTTAB_RECORD_SIZE = _TALENTTAB_FIELD_COUNT * 4  # 96
+
+
+def _build_talenttab_record(
+    dbc,
+    tab_id,
+    name,
+    spell_icon_id=1,
+    race_mask=0,
+    class_mask=0,
+    category_enum_id=0,
+    order_index=0,
+    background_file=None,
+):
+    """Build a raw 96-byte TalentTab.dbc record for WotLK 3.3.5."""
+    buf = bytearray()
+
+    # 0: ID
+    buf += struct.pack('<I', tab_id)
+    # 1-17: Name_lang (locstring, 17 uint32)
+    name_offset = dbc.add_string(name)
+    buf += _pack_locstring(name_offset)
+    # 18: SpellIconID
+    buf += struct.pack('<I', spell_icon_id)
+    # 19: RaceMask
+    buf += struct.pack('<I', race_mask)
+    # 20: ClassMask
+    buf += struct.pack('<I', class_mask)
+    # 21: CategoryEnumID
+    buf += struct.pack('<I', category_enum_id)
+    # 22: OrderIndex
+    buf += struct.pack('<I', order_index)
+    # 23: BackgroundFile (string offset)
+    buf += struct.pack('<I', dbc.add_string(background_file) if background_file else 0)
+
+    assert len(buf) == _TALENTTAB_RECORD_SIZE, (
+        "TalentTab record size mismatch: expected {}, got {}".format(
+            _TALENTTAB_RECORD_SIZE, len(buf))
+    )
+    return bytes(buf)
+
+
+def register_talent_tab(
+    dbc_dir,
+    name,
+    class_mask,
+    tab_id=None,
+    spell_icon_id=1,
+    order_index=0,
+    background_file=None,
+    race_mask=0,
+):
+    """
+    Register a new talent tab in TalentTab.dbc.
+
+    Args:
+        dbc_dir: Path to directory containing TalentTab.dbc.
+        name: Tab display name (e.g. "Fire").
+        class_mask: Class bitmask (1=warrior, 2=paladin, 4=hunter, etc.).
+        tab_id: Specific tab ID or None for auto (max_id + 1).
+        spell_icon_id: FK to SpellIcon.dbc (default 1).
+        order_index: Display order within class (0, 1, or 2).
+        background_file: Optional background texture path.
+        race_mask: Allowed race bitmask (0=all races).
+
+    Returns:
+        int: The assigned tab ID.
+    """
+    filepath = os.path.join(dbc_dir, 'TalentTab.dbc')
+    dbc = DBCInjector(filepath)
+
+    if tab_id is None:
+        tab_id = dbc.get_max_id() + 1
+
+    record = _build_talenttab_record(
+        dbc=dbc,
+        tab_id=tab_id,
+        name=name,
+        spell_icon_id=spell_icon_id,
+        race_mask=race_mask,
+        class_mask=class_mask,
+        order_index=order_index,
+        background_file=background_file,
+    )
+
+    dbc.records.append(record)
+    dbc.write(filepath)
+
+    return tab_id
+
+
+# ---------------------------------------------------------------------------
+# SpellIcon.dbc field layout (all builds through 3.3.5.12340)
+# Source: wdbx/dbd/definitions/SpellIcon.dbd
+#
+# Index  Field                        Type     Notes
+# -----  ---------------------------  -------  -----
+#  0     ID                           uint32
+#  1     TextureFilename              string   Icon texture path
+# Total: 2 fields = 8 bytes
+# ---------------------------------------------------------------------------
+_SPELLICON_FIELD_COUNT = 2
+_SPELLICON_RECORD_SIZE = _SPELLICON_FIELD_COUNT * 4  # 8
+
+
+def register_spell_icon(dbc_dir, texture_path, icon_id=None):
+    """
+    Register a new spell icon in SpellIcon.dbc.
+
+    Args:
+        dbc_dir: Path to directory containing SpellIcon.dbc.
+        texture_path: Icon texture path (e.g. "Interface\\Icons\\Spell_Nature_Lightning").
+        icon_id: Specific icon ID or None for auto (max_id + 1).
+
+    Returns:
+        int: The assigned icon ID.
+    """
+    filepath = os.path.join(dbc_dir, 'SpellIcon.dbc')
+    dbc = DBCInjector(filepath)
+
+    if icon_id is None:
+        icon_id = dbc.get_max_id() + 1
+
+    buf = bytearray()
+    buf += struct.pack('<I', icon_id)
+    buf += struct.pack('<I', dbc.add_string(texture_path))
+
+    assert len(buf) == _SPELLICON_RECORD_SIZE
+    dbc.records.append(bytes(buf))
+    dbc.write(filepath)
+
+    return icon_id
+
+
+# ---------------------------------------------------------------------------
+# GameObjectDisplayInfo.dbc field layout (3.0.1.8622 - 3.3.5.12340)
+# Source: wdbx/dbd/definitions/GameObjectDisplayInfo.dbd
+#
+# Index  Field                        Type     Count  Notes
+# -----  ---------------------------  -------  -----  -----
+#  0     ID                           uint32
+#  1     ModelName                    string   Path to .wmo or .m2
+#  2-11  Sound                        uint32   [10]   Sound IDs
+# 12-14  GeoBoxMin                    float    [3]    Bounding box min
+# 15-17  GeoBoxMax                    float    [3]    Bounding box max
+# 18     ObjectEffectPackageID        uint32   FK to ObjectEffectPackage.dbc
+# Total: 19 fields = 76 bytes
+# ---------------------------------------------------------------------------
+_GAMEOBJECTDISPLAYINFO_FIELD_COUNT = 19
+_GAMEOBJECTDISPLAYINFO_RECORD_SIZE = _GAMEOBJECTDISPLAYINFO_FIELD_COUNT * 4  # 76
+
+
+def register_gameobject_display(dbc_dir, model_path, display_id=None,
+                                bounding_box=None):
+    """
+    Register a new gameobject display in GameObjectDisplayInfo.dbc.
+
+    Args:
+        dbc_dir: Path to directory containing GameObjectDisplayInfo.dbc.
+        model_path: Path to model file (e.g. "World\\Generic\\Human\\Passive Doodads\\Barrels\\Barrel01.wmo").
+        display_id: Specific display ID or None for auto (max_id + 1).
+        bounding_box: Optional ((min_x,min_y,min_z), (max_x,max_y,max_z)) tuple.
+
+    Returns:
+        int: The assigned display ID.
+    """
+    filepath = os.path.join(dbc_dir, 'GameObjectDisplayInfo.dbc')
+    dbc = DBCInjector(filepath)
+
+    if display_id is None:
+        display_id = dbc.get_max_id() + 1
+
+    geo_min = (0.0, 0.0, 0.0)
+    geo_max = (0.0, 0.0, 0.0)
+    if bounding_box is not None:
+        geo_min = tuple(bounding_box[0])
+        geo_max = tuple(bounding_box[1])
+
+    buf = bytearray()
+    # 0: ID
+    buf += struct.pack('<I', display_id)
+    # 1: ModelName
+    buf += struct.pack('<I', dbc.add_string(model_path))
+    # 2-11: Sound[10]
+    buf += struct.pack('<10I', *([0] * 10))
+    # 12-14: GeoBoxMin[3]
+    buf += struct.pack('<3f', *geo_min)
+    # 15-17: GeoBoxMax[3]
+    buf += struct.pack('<3f', *geo_max)
+    # 18: ObjectEffectPackageID
+    buf += struct.pack('<I', 0)
+
+    assert len(buf) == _GAMEOBJECTDISPLAYINFO_RECORD_SIZE
+    dbc.records.append(bytes(buf))
+    dbc.write(filepath)
+
+    return display_id
+
+
+# ---------------------------------------------------------------------------
+# ZoneIntroMusicTable.dbc field layout (3.0.1.8303 - 3.3.5.12340)
+# Source: wdbx/dbd/definitions/ZoneIntroMusicTable.dbd
+#
+# Index  Field                        Type     Notes
+# -----  ---------------------------  -------  -----
+#  0     ID                           uint32
+#  1     Name                         string   Internal name
+#  2     SoundID                      uint32   FK to SoundEntries.dbc
+#  3     Priority                     uint32
+#  4     MinDelayMinutes              uint32
+# Total: 5 fields = 20 bytes
+# ---------------------------------------------------------------------------
+_ZONEINTROMUSIC_FIELD_COUNT = 5
+_ZONEINTROMUSIC_RECORD_SIZE = _ZONEINTROMUSIC_FIELD_COUNT * 4  # 20
+
+
+def register_zone_intro_music(dbc_dir, name, sound_id, intro_id=None,
+                              priority=0, min_delay=0):
+    """
+    Register a zone intro music stinger in ZoneIntroMusicTable.dbc.
+
+    Args:
+        dbc_dir: Path to directory containing ZoneIntroMusicTable.dbc.
+        name: Internal name for the intro music entry.
+        sound_id: FK to SoundEntries.dbc.
+        intro_id: Specific ID or None for auto (max_id + 1).
+        priority: Playback priority (default 0).
+        min_delay: Minimum delay in minutes between plays (default 0).
+
+    Returns:
+        int: The assigned intro music ID.
+    """
+    filepath = os.path.join(dbc_dir, 'ZoneIntroMusicTable.dbc')
+    dbc = DBCInjector(filepath)
+
+    if intro_id is None:
+        intro_id = dbc.get_max_id() + 1
+
+    buf = bytearray()
+    # 0: ID
+    buf += struct.pack('<I', intro_id)
+    # 1: Name
+    buf += struct.pack('<I', dbc.add_string(name))
+    # 2: SoundID
+    buf += struct.pack('<I', sound_id)
+    # 3: Priority
+    buf += struct.pack('<I', priority)
+    # 4: MinDelayMinutes
+    buf += struct.pack('<I', min_delay)
+
+    assert len(buf) == _ZONEINTROMUSIC_RECORD_SIZE
+    dbc.records.append(bytes(buf))
+    dbc.write(filepath)
+
+    return intro_id
