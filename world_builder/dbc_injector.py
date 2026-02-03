@@ -3938,3 +3938,895 @@ def register_zone_intro_music(dbc_dir, name, sound_id, intro_id=None,
     dbc.write(filepath)
 
     return intro_id
+
+
+# ---------------------------------------------------------------------------
+# ItemDisplayInfo.dbc field layout (3.0.1.8303 - 3.3.5.12340)
+# Source: wdbx/dbd/definitions/ItemDisplayInfo.dbd
+#
+# Index  Field                        Type     Count  Notes
+# -----  ---------------------------  -------  -----  -----
+#  0     ID                           uint32
+#  1-2   ModelName                    string   [2]    Left/right model paths
+#  3-4   ModelTexture                 string   [2]    Left/right texture paths
+#  5-6   InventoryIcon                string   [2]    Icon/extra icon paths
+#  7-9   GeosetGroup                  uint32   [3]    Geoset group overrides
+# 10     Flags                        uint32
+# 11     SpellVisualID                uint32   FK to SpellVisual.dbc
+# 12     GroupSoundIndex              uint32
+# 13-14  HelmetGeosetVisID            uint32   [2]    Helmet geoset visibility
+# 15-22  Texture                      string   [8]    Armor component textures
+# 23     ItemVisual                   uint32   FK to ItemVisual.dbc
+# 24     ParticleColorID              uint32   FK to ParticleColor.dbc
+# Total: 25 fields = 100 bytes
+# ---------------------------------------------------------------------------
+_ITEMDISPLAYINFO_FIELD_COUNT = 25
+_ITEMDISPLAYINFO_RECORD_SIZE = _ITEMDISPLAYINFO_FIELD_COUNT * 4  # 100
+
+
+def _build_item_display_record(
+    dbc,
+    display_id,
+    model_names=None,
+    model_textures=None,
+    inventory_icons=None,
+    geoset_groups=None,
+    flags=0,
+    spell_visual_id=0,
+    group_sound_index=0,
+    helmet_geoset_vis=None,
+    textures=None,
+    item_visual=0,
+    particle_color_id=0,
+):
+    """Build a raw 100-byte ItemDisplayInfo.dbc record for WotLK 3.3.5."""
+    if model_names is None:
+        model_names = []
+    if model_textures is None:
+        model_textures = []
+    if inventory_icons is None:
+        inventory_icons = []
+    if geoset_groups is None:
+        geoset_groups = [0, 0, 0]
+    if helmet_geoset_vis is None:
+        helmet_geoset_vis = [0, 0]
+    if textures is None:
+        textures = []
+
+    buf = bytearray()
+
+    # 0: ID
+    buf += struct.pack('<I', display_id)
+    # 1-2: ModelName[2]
+    for i in range(2):
+        if i < len(model_names) and model_names[i]:
+            buf += struct.pack('<I', dbc.add_string(model_names[i]))
+        else:
+            buf += struct.pack('<I', 0)
+    # 3-4: ModelTexture[2]
+    for i in range(2):
+        if i < len(model_textures) and model_textures[i]:
+            buf += struct.pack('<I', dbc.add_string(model_textures[i]))
+        else:
+            buf += struct.pack('<I', 0)
+    # 5-6: InventoryIcon[2]
+    for i in range(2):
+        if i < len(inventory_icons) and inventory_icons[i]:
+            buf += struct.pack('<I', dbc.add_string(inventory_icons[i]))
+        else:
+            buf += struct.pack('<I', 0)
+    # 7-9: GeosetGroup[3]
+    padded_geo = list(geoset_groups[:3]) + [0] * (3 - min(len(geoset_groups), 3))
+    buf += struct.pack('<3I', *padded_geo)
+    # 10: Flags
+    buf += struct.pack('<I', flags)
+    # 11: SpellVisualID
+    buf += struct.pack('<I', spell_visual_id)
+    # 12: GroupSoundIndex
+    buf += struct.pack('<I', group_sound_index)
+    # 13-14: HelmetGeosetVisID[2]
+    padded_helm = list(helmet_geoset_vis[:2]) + [0] * (2 - min(len(helmet_geoset_vis), 2))
+    buf += struct.pack('<2I', *padded_helm)
+    # 15-22: Texture[8]
+    for i in range(8):
+        if i < len(textures) and textures[i]:
+            buf += struct.pack('<I', dbc.add_string(textures[i]))
+        else:
+            buf += struct.pack('<I', 0)
+    # 23: ItemVisual
+    buf += struct.pack('<I', item_visual)
+    # 24: ParticleColorID
+    buf += struct.pack('<I', particle_color_id)
+
+    assert len(buf) == _ITEMDISPLAYINFO_RECORD_SIZE, (
+        "ItemDisplayInfo record size mismatch: expected {}, got {}".format(
+            _ITEMDISPLAYINFO_RECORD_SIZE, len(buf))
+    )
+    return bytes(buf)
+
+
+def register_item_display(
+    dbc_dir,
+    display_id=None,
+    model_names=None,
+    model_textures=None,
+    inventory_icons=None,
+    geoset_groups=None,
+    flags=0,
+    spell_visual_id=0,
+    helmet_geoset_vis=None,
+    textures=None,
+    item_visual=0,
+    particle_color_id=0,
+):
+    """
+    Register a new item display in ItemDisplayInfo.dbc.
+
+    Args:
+        dbc_dir: Path to directory containing ItemDisplayInfo.dbc.
+        display_id: Specific display ID or None for auto (max_id + 1).
+        model_names: List of up to 2 model paths (left hand, right hand).
+        model_textures: List of up to 2 model texture paths.
+        inventory_icons: List of up to 2 icon paths (icon, extra icon).
+        geoset_groups: List of up to 3 geoset group overrides.
+        flags: Display flags (default 0).
+        spell_visual_id: FK to SpellVisual.dbc (default 0).
+        helmet_geoset_vis: List of up to 2 helmet geoset visibility values.
+        textures: List of up to 8 armor component texture paths.
+        item_visual: FK to ItemVisual.dbc for enchant glow (default 0).
+        particle_color_id: FK to ParticleColor.dbc (default 0).
+
+    Returns:
+        int: The assigned display ID.
+    """
+    filepath = os.path.join(dbc_dir, 'ItemDisplayInfo.dbc')
+    dbc = DBCInjector(filepath)
+
+    if display_id is None:
+        display_id = dbc.get_max_id() + 1
+
+    record = _build_item_display_record(
+        dbc=dbc,
+        display_id=display_id,
+        model_names=model_names,
+        model_textures=model_textures,
+        inventory_icons=inventory_icons,
+        geoset_groups=geoset_groups,
+        flags=flags,
+        spell_visual_id=spell_visual_id,
+        helmet_geoset_vis=helmet_geoset_vis,
+        textures=textures,
+        item_visual=item_visual,
+        particle_color_id=particle_color_id,
+    )
+
+    dbc.records.append(record)
+    dbc.write(filepath)
+
+    return display_id
+
+
+# ---------------------------------------------------------------------------
+# SpellVisual.dbc field layout (3.2.0.10192 - 3.3.5.12340)
+# Source: wdbx/dbd/definitions/SpellVisual.dbd
+#
+# Index  Field                        Type     Count  Notes
+# -----  ---------------------------  -------  -----  -----
+#  0     ID                           uint32
+#  1     PrecastKit                   uint32   FK to SpellVisualKit.dbc
+#  2     CastKit                      uint32   FK to SpellVisualKit.dbc
+#  3     ImpactKit                    uint32   FK to SpellVisualKit.dbc
+#  4     StateKit                     uint32   FK to SpellVisualKit.dbc
+#  5     StateDoneKit                 uint32   FK to SpellVisualKit.dbc
+#  6     ChannelKit                   uint32   FK to SpellVisualKit.dbc
+#  7     HasMissile                   uint32   Boolean (0/1)
+#  8     MissileModel                 uint32   FK to SpellVisualEffectName.dbc
+#  9     MissilePathType              uint32
+# 10     MissileDestinationAttachment uint32
+# 11     MissileSound                 uint32
+# 12     AnimEventSoundID             uint32   FK to SoundEntries.dbc
+# 13     Flags                        uint32
+# 14     CasterImpactKit              uint32   FK to SpellVisualKit.dbc
+# 15     TargetImpactKit              uint32   FK to SpellVisualKit.dbc
+# 16     MissileAttachment            uint32
+# 17     MissileFollowGroundHeight    uint32
+# 18     MissileFollowGroundDropSpeed uint32
+# 19     MissileFollowGroundApproach  uint32
+# 20     MissileFollowGroundFlags     uint32
+# 21     MissileMotion                uint32
+# 22     MissileTargetingKit          uint32   FK to SpellVisualKit.dbc
+# 23     InstantAreaKit               uint32   FK to SpellVisualKit.dbc
+# 24     ImpactAreaKit                uint32   FK to SpellVisualKit.dbc
+# 25     PersistentAreaKit            uint32   FK to SpellVisualKit.dbc
+# 26-28  MissileCastOffset            float    [3]  X, Y, Z
+# 29-31  MissileImpactOffset          float    [3]  X, Y, Z
+# Total: 32 fields = 128 bytes
+# ---------------------------------------------------------------------------
+_SPELLVISUAL_FIELD_COUNT = 32
+_SPELLVISUAL_RECORD_SIZE = _SPELLVISUAL_FIELD_COUNT * 4  # 128
+
+
+def _build_spell_visual_record(
+    visual_id,
+    precast_kit=0,
+    cast_kit=0,
+    impact_kit=0,
+    state_kit=0,
+    state_done_kit=0,
+    channel_kit=0,
+    has_missile=0,
+    missile_model=0,
+    missile_path_type=0,
+    missile_dest_attachment=0,
+    missile_sound=0,
+    anim_event_sound_id=0,
+    flags=0,
+    caster_impact_kit=0,
+    target_impact_kit=0,
+    missile_attachment=0,
+    missile_follow_ground_height=0,
+    missile_follow_ground_drop_speed=0,
+    missile_follow_ground_approach=0,
+    missile_follow_ground_flags=0,
+    missile_motion=0,
+    missile_targeting_kit=0,
+    instant_area_kit=0,
+    impact_area_kit=0,
+    persistent_area_kit=0,
+    missile_cast_offset=(0.0, 0.0, 0.0),
+    missile_impact_offset=(0.0, 0.0, 0.0),
+):
+    """Build a raw 128-byte SpellVisual.dbc record for WotLK 3.3.5."""
+    buf = bytearray()
+
+    # 0: ID
+    buf += struct.pack('<I', visual_id)
+    # 1: PrecastKit
+    buf += struct.pack('<I', precast_kit)
+    # 2: CastKit
+    buf += struct.pack('<I', cast_kit)
+    # 3: ImpactKit
+    buf += struct.pack('<I', impact_kit)
+    # 4: StateKit
+    buf += struct.pack('<I', state_kit)
+    # 5: StateDoneKit
+    buf += struct.pack('<I', state_done_kit)
+    # 6: ChannelKit
+    buf += struct.pack('<I', channel_kit)
+    # 7: HasMissile
+    buf += struct.pack('<I', has_missile)
+    # 8: MissileModel
+    buf += struct.pack('<I', missile_model)
+    # 9: MissilePathType
+    buf += struct.pack('<I', missile_path_type)
+    # 10: MissileDestinationAttachment
+    buf += struct.pack('<I', missile_dest_attachment)
+    # 11: MissileSound
+    buf += struct.pack('<I', missile_sound)
+    # 12: AnimEventSoundID
+    buf += struct.pack('<I', anim_event_sound_id)
+    # 13: Flags
+    buf += struct.pack('<I', flags)
+    # 14: CasterImpactKit
+    buf += struct.pack('<I', caster_impact_kit)
+    # 15: TargetImpactKit
+    buf += struct.pack('<I', target_impact_kit)
+    # 16: MissileAttachment
+    buf += struct.pack('<I', missile_attachment)
+    # 17: MissileFollowGroundHeight
+    buf += struct.pack('<I', missile_follow_ground_height)
+    # 18: MissileFollowGroundDropSpeed
+    buf += struct.pack('<I', missile_follow_ground_drop_speed)
+    # 19: MissileFollowGroundApproach
+    buf += struct.pack('<I', missile_follow_ground_approach)
+    # 20: MissileFollowGroundFlags
+    buf += struct.pack('<I', missile_follow_ground_flags)
+    # 21: MissileMotion
+    buf += struct.pack('<I', missile_motion)
+    # 22: MissileTargetingKit
+    buf += struct.pack('<I', missile_targeting_kit)
+    # 23: InstantAreaKit
+    buf += struct.pack('<I', instant_area_kit)
+    # 24: ImpactAreaKit
+    buf += struct.pack('<I', impact_area_kit)
+    # 25: PersistentAreaKit
+    buf += struct.pack('<I', persistent_area_kit)
+    # 26-28: MissileCastOffset (x, y, z)
+    buf += struct.pack('<3f', *missile_cast_offset)
+    # 29-31: MissileImpactOffset (x, y, z)
+    buf += struct.pack('<3f', *missile_impact_offset)
+
+    assert len(buf) == _SPELLVISUAL_RECORD_SIZE, (
+        "SpellVisual record size mismatch: expected {}, got {}".format(
+            _SPELLVISUAL_RECORD_SIZE, len(buf))
+    )
+    return bytes(buf)
+
+
+def register_spell_visual(
+    dbc_dir,
+    visual_id=None,
+    precast_kit=0,
+    cast_kit=0,
+    impact_kit=0,
+    state_kit=0,
+    channel_kit=0,
+    has_missile=0,
+    missile_model=0,
+    missile_path_type=0,
+    caster_impact_kit=0,
+    target_impact_kit=0,
+    instant_area_kit=0,
+    impact_area_kit=0,
+    persistent_area_kit=0,
+    missile_cast_offset=(0.0, 0.0, 0.0),
+    missile_impact_offset=(0.0, 0.0, 0.0),
+    flags=0,
+):
+    """
+    Register a new spell visual in SpellVisual.dbc.
+
+    Each SpellVisualKit field (precast_kit, cast_kit, etc.) is an FK to
+    SpellVisualKit.dbc that controls the particle effects for that phase
+    of the spell cast.
+
+    Args:
+        dbc_dir: Path to directory containing SpellVisual.dbc.
+        visual_id: Specific visual ID or None for auto (max_id + 1).
+        precast_kit: FK to SpellVisualKit.dbc for precast phase.
+        cast_kit: FK to SpellVisualKit.dbc for cast phase.
+        impact_kit: FK to SpellVisualKit.dbc for impact phase.
+        state_kit: FK to SpellVisualKit.dbc for state (buff) phase.
+        channel_kit: FK to SpellVisualKit.dbc for channel phase.
+        has_missile: 1 if spell has a missile projectile, 0 otherwise.
+        missile_model: FK to SpellVisualEffectName.dbc for missile model.
+        missile_path_type: Missile trajectory type.
+        caster_impact_kit: FK to SpellVisualKit.dbc for caster impact.
+        target_impact_kit: FK to SpellVisualKit.dbc for target impact.
+        instant_area_kit: FK to SpellVisualKit.dbc for instant area effect.
+        impact_area_kit: FK to SpellVisualKit.dbc for impact area effect.
+        persistent_area_kit: FK to SpellVisualKit.dbc for persistent area.
+        missile_cast_offset: (x, y, z) offset for missile launch point.
+        missile_impact_offset: (x, y, z) offset for missile impact point.
+        flags: Visual flags.
+
+    Returns:
+        int: The assigned visual ID.
+    """
+    filepath = os.path.join(dbc_dir, 'SpellVisual.dbc')
+    dbc = DBCInjector(filepath)
+
+    if visual_id is None:
+        visual_id = dbc.get_max_id() + 1
+
+    record = _build_spell_visual_record(
+        visual_id=visual_id,
+        precast_kit=precast_kit,
+        cast_kit=cast_kit,
+        impact_kit=impact_kit,
+        state_kit=state_kit,
+        channel_kit=channel_kit,
+        has_missile=has_missile,
+        missile_model=missile_model,
+        missile_path_type=missile_path_type,
+        flags=flags,
+        caster_impact_kit=caster_impact_kit,
+        target_impact_kit=target_impact_kit,
+        instant_area_kit=instant_area_kit,
+        impact_area_kit=impact_area_kit,
+        persistent_area_kit=persistent_area_kit,
+        missile_cast_offset=missile_cast_offset,
+        missile_impact_offset=missile_impact_offset,
+    )
+
+    dbc.records.append(record)
+    dbc.write(filepath)
+
+    return visual_id
+
+
+# ---------------------------------------------------------------------------
+# SpellVisualKit.dbc field layout (3.1.0.9767 - 3.3.5.12340)
+# Source: wdbx/dbd/definitions/SpellVisualKit.dbd
+#
+# Index  Field                        Type     Count  Notes
+# -----  ---------------------------  -------  -----  -----
+#  0     ID                           uint32
+#  1     StartAnimID                  uint32   FK to AnimationData.dbc
+#  2     AnimID                       uint32   FK to AnimationData.dbc
+#  3     HeadEffect                   uint32   FK to SpellVisualEffectName.dbc
+#  4     ChestEffect                  uint32   FK to SpellVisualEffectName.dbc
+#  5     BaseEffect                   uint32   FK to SpellVisualEffectName.dbc
+#  6     LeftHandEffect               uint32   FK to SpellVisualEffectName.dbc
+#  7     RightHandEffect              uint32   FK to SpellVisualEffectName.dbc
+#  8     BreathEffect                 uint32   FK to SpellVisualEffectName.dbc
+#  9     LeftWeaponEffect             uint32   FK to SpellVisualEffectName.dbc
+# 10     RightWeaponEffect            uint32   FK to SpellVisualEffectName.dbc
+# 11-13  SpecialEffect                uint32   [3]  FK to SpellVisualEffectName.dbc
+# 14     WorldEffect                  uint32   FK to SpellVisualEffectName.dbc
+# 15     SoundID                      uint32   FK to SoundEntries.dbc
+# 16     ShakeID                      uint32   FK to SpellEffectCameraShakes.dbc
+# 17-20  CharProc                     uint32   [4]  Character procedure IDs
+# 21-24  CharParamZero                float    [4]  Procedure params
+# 25-28  CharParamOne                 float    [4]  Procedure params
+# 29-32  CharParamTwo                 float    [4]  Procedure params
+# 33-36  CharParamThree               float    [4]  Procedure params
+# 37     Flags                        uint32
+# Total: 38 fields = 152 bytes
+# ---------------------------------------------------------------------------
+_SPELLVISUALKIT_FIELD_COUNT = 38
+_SPELLVISUALKIT_RECORD_SIZE = _SPELLVISUALKIT_FIELD_COUNT * 4  # 152
+
+
+def _build_spell_visual_kit_record(
+    kit_id,
+    start_anim_id=0,
+    anim_id=0,
+    head_effect=0,
+    chest_effect=0,
+    base_effect=0,
+    left_hand_effect=0,
+    right_hand_effect=0,
+    breath_effect=0,
+    left_weapon_effect=0,
+    right_weapon_effect=0,
+    special_effects=None,
+    world_effect=0,
+    sound_id=0,
+    shake_id=0,
+    char_procs=None,
+    char_param_zero=None,
+    char_param_one=None,
+    char_param_two=None,
+    char_param_three=None,
+    flags=0,
+):
+    """Build a raw 152-byte SpellVisualKit.dbc record for WotLK 3.3.5."""
+    if special_effects is None:
+        special_effects = [0, 0, 0]
+    if char_procs is None:
+        char_procs = [0, 0, 0, 0]
+    if char_param_zero is None:
+        char_param_zero = [0.0, 0.0, 0.0, 0.0]
+    if char_param_one is None:
+        char_param_one = [0.0, 0.0, 0.0, 0.0]
+    if char_param_two is None:
+        char_param_two = [0.0, 0.0, 0.0, 0.0]
+    if char_param_three is None:
+        char_param_three = [0.0, 0.0, 0.0, 0.0]
+
+    buf = bytearray()
+
+    # 0: ID
+    buf += struct.pack('<I', kit_id)
+    # 1: StartAnimID
+    buf += struct.pack('<I', start_anim_id)
+    # 2: AnimID
+    buf += struct.pack('<I', anim_id)
+    # 3: HeadEffect
+    buf += struct.pack('<I', head_effect)
+    # 4: ChestEffect
+    buf += struct.pack('<I', chest_effect)
+    # 5: BaseEffect
+    buf += struct.pack('<I', base_effect)
+    # 6: LeftHandEffect
+    buf += struct.pack('<I', left_hand_effect)
+    # 7: RightHandEffect
+    buf += struct.pack('<I', right_hand_effect)
+    # 8: BreathEffect
+    buf += struct.pack('<I', breath_effect)
+    # 9: LeftWeaponEffect
+    buf += struct.pack('<I', left_weapon_effect)
+    # 10: RightWeaponEffect
+    buf += struct.pack('<I', right_weapon_effect)
+    # 11-13: SpecialEffect[3]
+    padded_special = list(special_effects[:3]) + [0] * (3 - min(len(special_effects), 3))
+    buf += struct.pack('<3I', *padded_special)
+    # 14: WorldEffect
+    buf += struct.pack('<I', world_effect)
+    # 15: SoundID
+    buf += struct.pack('<I', sound_id)
+    # 16: ShakeID
+    buf += struct.pack('<I', shake_id)
+    # 17-20: CharProc[4]
+    padded_procs = list(char_procs[:4]) + [0] * (4 - min(len(char_procs), 4))
+    buf += struct.pack('<4I', *padded_procs)
+    # 21-24: CharParamZero[4]
+    padded_p0 = list(char_param_zero[:4]) + [0.0] * (4 - min(len(char_param_zero), 4))
+    buf += struct.pack('<4f', *padded_p0)
+    # 25-28: CharParamOne[4]
+    padded_p1 = list(char_param_one[:4]) + [0.0] * (4 - min(len(char_param_one), 4))
+    buf += struct.pack('<4f', *padded_p1)
+    # 29-32: CharParamTwo[4]
+    padded_p2 = list(char_param_two[:4]) + [0.0] * (4 - min(len(char_param_two), 4))
+    buf += struct.pack('<4f', *padded_p2)
+    # 33-36: CharParamThree[4]
+    padded_p3 = list(char_param_three[:4]) + [0.0] * (4 - min(len(char_param_three), 4))
+    buf += struct.pack('<4f', *padded_p3)
+    # 37: Flags
+    buf += struct.pack('<I', flags)
+
+    assert len(buf) == _SPELLVISUALKIT_RECORD_SIZE, (
+        "SpellVisualKit record size mismatch: expected {}, got {}".format(
+            _SPELLVISUALKIT_RECORD_SIZE, len(buf))
+    )
+    return bytes(buf)
+
+
+def register_spell_visual_kit(
+    dbc_dir,
+    kit_id=None,
+    base_effect=0,
+    head_effect=0,
+    chest_effect=0,
+    left_hand_effect=0,
+    right_hand_effect=0,
+    breath_effect=0,
+    left_weapon_effect=0,
+    right_weapon_effect=0,
+    special_effects=None,
+    world_effect=0,
+    sound_id=0,
+    shake_id=0,
+    start_anim_id=0,
+    anim_id=0,
+    flags=0,
+):
+    """
+    Register a new spell visual kit in SpellVisualKit.dbc.
+
+    A visual kit defines the particle effects, animations, and sounds for
+    one phase of a spell visual (e.g. cast, impact, state). Referenced by
+    SpellVisual.dbc fields like CastKit, ImpactKit, etc.
+
+    Args:
+        dbc_dir: Path to directory containing SpellVisualKit.dbc.
+        kit_id: Specific kit ID or None for auto (max_id + 1).
+        base_effect: FK to SpellVisualEffectName.dbc for base/feet effect.
+        head_effect: FK to SpellVisualEffectName.dbc for head effect.
+        chest_effect: FK to SpellVisualEffectName.dbc for chest effect.
+        left_hand_effect: FK to SpellVisualEffectName.dbc for left hand.
+        right_hand_effect: FK to SpellVisualEffectName.dbc for right hand.
+        breath_effect: FK to SpellVisualEffectName.dbc for breath.
+        left_weapon_effect: FK to SpellVisualEffectName.dbc for left weapon.
+        right_weapon_effect: FK to SpellVisualEffectName.dbc for right weapon.
+        special_effects: List of up to 3 SpellVisualEffectName IDs.
+        world_effect: FK to SpellVisualEffectName.dbc for world effect.
+        sound_id: FK to SoundEntries.dbc.
+        shake_id: FK to SpellEffectCameraShakes.dbc.
+        start_anim_id: FK to AnimationData.dbc for start animation.
+        anim_id: FK to AnimationData.dbc for main animation.
+        flags: Kit flags.
+
+    Returns:
+        int: The assigned kit ID.
+    """
+    filepath = os.path.join(dbc_dir, 'SpellVisualKit.dbc')
+    dbc = DBCInjector(filepath)
+
+    if kit_id is None:
+        kit_id = dbc.get_max_id() + 1
+
+    record = _build_spell_visual_kit_record(
+        kit_id=kit_id,
+        start_anim_id=start_anim_id,
+        anim_id=anim_id,
+        head_effect=head_effect,
+        chest_effect=chest_effect,
+        base_effect=base_effect,
+        left_hand_effect=left_hand_effect,
+        right_hand_effect=right_hand_effect,
+        breath_effect=breath_effect,
+        left_weapon_effect=left_weapon_effect,
+        right_weapon_effect=right_weapon_effect,
+        special_effects=special_effects,
+        world_effect=world_effect,
+        sound_id=sound_id,
+        shake_id=shake_id,
+        flags=flags,
+    )
+
+    dbc.records.append(record)
+    dbc.write(filepath)
+
+    return kit_id
+
+
+# ---------------------------------------------------------------------------
+# ChrRaces.dbc field layout (WotLK 3.3.5a)
+# Source: wdbx/dbd/definitions/ChrRaces.dbd, wowdev.wiki
+#
+# Index  Field                        Type     Count  Notes
+# -----  ---------------------------  -------  -----  -----
+#  0     ID                           uint32
+#  1     Flags                        uint32
+#  2     FactionID                    uint32   FK to FactionTemplate.dbc
+#  3     ExplorationSoundID           uint32   FK to SoundEntries.dbc
+#  4     MaleDisplayID                uint32   FK to CreatureDisplayInfo.dbc
+#  5     FemaleDisplayID              uint32   FK to CreatureDisplayInfo.dbc
+#  6     ClientPrefix                 string   Internal prefix (e.g. "HU")
+#  7     BaseLanguage                 uint32   7=Common, 1=Orcish
+#  8     CreatureType                 uint32   7=Humanoid
+#  9     ResSicknessSpellID           uint32   FK to Spell.dbc (15007)
+# 10     SplashSoundID                uint32   FK to SoundEntries.dbc
+# 11     ClientFileString             string   Model folder (e.g. "Human")
+# 12     CinematicSequenceID          uint32   FK to CinematicSequences.dbc
+# 13     Alliance                     uint32   0=Horde, 1=Alliance
+# 14-30  Name_lang                    locstr   17  Display name
+# 31-47  Name_female_lang             locstr   17  Female name (or 0)
+# 48-64  Name_male_lang               locstr   17  Male name (or 0)
+# 65-66  FacialHairCustomization      string   [2]  Customization labels
+# 67     HairCustomization            string   Customization label
+# 68     Required_expansion           uint32   0=classic, 1=TBC, 2=WotLK
+# Total: 69 fields = 276 bytes
+# ---------------------------------------------------------------------------
+_CHRRACES_FIELD_COUNT = 69
+_CHRRACES_RECORD_SIZE = _CHRRACES_FIELD_COUNT * 4  # 276
+
+
+def _build_chr_races_record(
+    dbc,
+    race_id,
+    name,
+    client_prefix,
+    client_file_string,
+    male_display_id,
+    female_display_id,
+    faction_id=0,
+    flags=0,
+    exploration_sound_id=0,
+    base_language=7,
+    creature_type=7,
+    res_sickness_spell_id=15007,
+    splash_sound_id=0,
+    cinematic_sequence_id=0,
+    alliance=1,
+    name_female=None,
+    name_male=None,
+    facial_hair_customization=None,
+    hair_customization=None,
+    required_expansion=0,
+):
+    """Build a raw 276-byte ChrRaces.dbc record for WotLK 3.3.5."""
+    buf = bytearray()
+
+    # 0: ID
+    buf += struct.pack('<I', race_id)
+    # 1: Flags
+    buf += struct.pack('<I', flags)
+    # 2: FactionID
+    buf += struct.pack('<I', faction_id)
+    # 3: ExplorationSoundID
+    buf += struct.pack('<I', exploration_sound_id)
+    # 4: MaleDisplayID
+    buf += struct.pack('<I', male_display_id)
+    # 5: FemaleDisplayID
+    buf += struct.pack('<I', female_display_id)
+    # 6: ClientPrefix
+    buf += struct.pack('<I', dbc.add_string(client_prefix))
+    # 7: BaseLanguage
+    buf += struct.pack('<I', base_language)
+    # 8: CreatureType
+    buf += struct.pack('<I', creature_type)
+    # 9: ResSicknessSpellID
+    buf += struct.pack('<I', res_sickness_spell_id)
+    # 10: SplashSoundID
+    buf += struct.pack('<I', splash_sound_id)
+    # 11: ClientFileString
+    buf += struct.pack('<I', dbc.add_string(client_file_string))
+    # 12: CinematicSequenceID
+    buf += struct.pack('<I', cinematic_sequence_id)
+    # 13: Alliance
+    buf += struct.pack('<I', alliance)
+    # 14-30: Name_lang (locstring, 17 uint32)
+    buf += _pack_locstring(dbc.add_string(name))
+    # 31-47: Name_female_lang (locstring, 17 uint32)
+    buf += _pack_locstring(dbc.add_string(name_female) if name_female else 0)
+    # 48-64: Name_male_lang (locstring, 17 uint32)
+    buf += _pack_locstring(dbc.add_string(name_male) if name_male else 0)
+    # 65-66: FacialHairCustomization[2]
+    if facial_hair_customization is None:
+        facial_hair_customization = []
+    for i in range(2):
+        if i < len(facial_hair_customization) and facial_hair_customization[i]:
+            buf += struct.pack('<I', dbc.add_string(facial_hair_customization[i]))
+        else:
+            buf += struct.pack('<I', 0)
+    # 67: HairCustomization
+    buf += struct.pack('<I', dbc.add_string(hair_customization) if hair_customization else 0)
+    # 68: Required_expansion
+    buf += struct.pack('<I', required_expansion)
+
+    assert len(buf) == _CHRRACES_RECORD_SIZE, (
+        "ChrRaces record size mismatch: expected {}, got {}".format(
+            _CHRRACES_RECORD_SIZE, len(buf))
+    )
+    return bytes(buf)
+
+
+def register_race(
+    dbc_dir,
+    name,
+    client_prefix,
+    client_file_string,
+    male_display_id,
+    female_display_id,
+    race_id=None,
+    faction_id=0,
+    flags=0,
+    base_language=7,
+    alliance=1,
+    cinematic_sequence_id=0,
+    name_female=None,
+    name_male=None,
+    required_expansion=0,
+):
+    """
+    Register a new race in ChrRaces.dbc.
+
+    Primarily useful for race reskins (replacing an existing race's visuals
+    and identity). Adding a truly new playable race also requires C++ core
+    changes that are outside pywowlib's scope.
+
+    Args:
+        dbc_dir: Path to directory containing ChrRaces.dbc.
+        name: Race display name (e.g. "High Elf").
+        client_prefix: Internal prefix (e.g. "HE"), used for model paths.
+        client_file_string: Model folder name (e.g. "HighElf").
+        male_display_id: FK to CreatureDisplayInfo.dbc for male model.
+        female_display_id: FK to CreatureDisplayInfo.dbc for female model.
+        race_id: Specific race ID or None for auto (max_id + 1).
+        faction_id: FK to FactionTemplate.dbc (default 0).
+        flags: Race flags (default 0).
+        base_language: Language ID (7=Common, 1=Orcish, default 7).
+        alliance: 0=Horde, 1=Alliance (default 1).
+        cinematic_sequence_id: FK to CinematicSequences.dbc (default 0).
+        name_female: Optional female-specific display name.
+        name_male: Optional male-specific display name.
+        required_expansion: 0=classic, 1=TBC, 2=WotLK (default 0).
+
+    Returns:
+        int: The assigned race ID.
+    """
+    filepath = os.path.join(dbc_dir, 'ChrRaces.dbc')
+    dbc = DBCInjector(filepath)
+
+    if race_id is None:
+        race_id = dbc.get_max_id() + 1
+
+    record = _build_chr_races_record(
+        dbc=dbc,
+        race_id=race_id,
+        name=name,
+        client_prefix=client_prefix,
+        client_file_string=client_file_string,
+        male_display_id=male_display_id,
+        female_display_id=female_display_id,
+        faction_id=faction_id,
+        flags=flags,
+        base_language=base_language,
+        alliance=alliance,
+        cinematic_sequence_id=cinematic_sequence_id,
+        name_female=name_female,
+        name_male=name_male,
+        required_expansion=required_expansion,
+    )
+
+    dbc.records.append(record)
+    dbc.write(filepath)
+
+    return race_id
+
+
+# ---------------------------------------------------------------------------
+# CharStartOutfit.dbc field layout (3.0.1.8303 - 3.3.5.12340)
+# Source: wdbx/dbd/definitions/CharStartOutfit.dbd
+#
+# Index  Field                        Type     Count  Notes
+# -----  ---------------------------  -------  -----  -----
+#  0     ID                           uint32
+#  1     RaceID|ClassID|SexID|OutfitID  packed  4×u8  Byte-packed header
+#  2-25  ItemID                       uint32   [24]   Starting item IDs
+# 26-49  DisplayItemID                uint32   [24]   Display IDs for each item
+# 50-73  InventoryType                uint32   [24]   Slot type for each item
+# Total: 74 fields = 296 bytes
+# ---------------------------------------------------------------------------
+_CHARSTARTOUTFIT_FIELD_COUNT = 74
+_CHARSTARTOUTFIT_RECORD_SIZE = _CHARSTARTOUTFIT_FIELD_COUNT * 4  # 296
+
+
+def _build_char_start_outfit_record(
+    outfit_id,
+    race_id,
+    class_id,
+    sex_id,
+    outfit_index=0,
+    items=None,
+):
+    """Build a raw 296-byte CharStartOutfit.dbc record for WotLK 3.3.5.
+
+    Args:
+        outfit_id: Record ID.
+        race_id: Race ID (1-10).
+        class_id: Class ID (1-11).
+        sex_id: 0=male, 1=female.
+        outfit_index: Outfit variant index (usually 0).
+        items: List of (item_id, display_item_id, inventory_type) tuples,
+               up to 24 slots. Unused slots are filled with 0.
+    """
+    if items is None:
+        items = []
+
+    buf = bytearray()
+
+    # 0: ID
+    buf += struct.pack('<I', outfit_id)
+    # 1: Packed RaceID(u8) + ClassID(u8) + SexID(u8) + OutfitID(u8)
+    buf += struct.pack('<BBBB', race_id, class_id, sex_id, outfit_index)
+    # 2-25: ItemID[24]
+    for i in range(24):
+        item_id = items[i][0] if i < len(items) else 0
+        buf += struct.pack('<I', item_id)
+    # 26-49: DisplayItemID[24]
+    for i in range(24):
+        display_id = items[i][1] if i < len(items) else 0
+        buf += struct.pack('<I', display_id)
+    # 50-73: InventoryType[24]
+    for i in range(24):
+        inv_type = items[i][2] if i < len(items) else 0
+        buf += struct.pack('<I', inv_type)
+
+    assert len(buf) == _CHARSTARTOUTFIT_RECORD_SIZE, (
+        "CharStartOutfit record size mismatch: expected {}, got {}".format(
+            _CHARSTARTOUTFIT_RECORD_SIZE, len(buf))
+    )
+    return bytes(buf)
+
+
+def register_char_start_outfit(
+    dbc_dir,
+    race_id,
+    class_id,
+    sex_id,
+    items=None,
+    outfit_id=None,
+    outfit_index=0,
+):
+    """
+    Register a starting outfit in CharStartOutfit.dbc.
+
+    Defines the items a character starts with when created for a given
+    race/class/sex combination.
+
+    Args:
+        dbc_dir: Path to directory containing CharStartOutfit.dbc.
+        race_id: Race ID (1=Human, 2=Orc, etc.).
+        class_id: Class ID (1=Warrior, 2=Paladin, etc.).
+        sex_id: 0=male, 1=female.
+        items: List of (item_id, display_item_id, inventory_type) tuples.
+               Up to 24 item slots. Use item_id=0 for empty slots.
+        outfit_id: Specific record ID or None for auto (max_id + 1).
+        outfit_index: Outfit variant index (default 0, usually 0).
+
+    Returns:
+        int: The assigned outfit record ID.
+    """
+    filepath = os.path.join(dbc_dir, 'CharStartOutfit.dbc')
+    dbc = DBCInjector(filepath)
+
+    if outfit_id is None:
+        outfit_id = dbc.get_max_id() + 1
+
+    record = _build_char_start_outfit_record(
+        outfit_id=outfit_id,
+        race_id=race_id,
+        class_id=class_id,
+        sex_id=sex_id,
+        outfit_index=outfit_index,
+        items=items,
+    )
+
+    dbc.records.append(record)
+    dbc.write(filepath)
+
+    return outfit_id

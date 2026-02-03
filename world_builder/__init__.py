@@ -18,12 +18,15 @@ from .dbc_injector import (DBCInjector, register_map, register_area,
                            register_spell, modify_spell,
                            register_skill_line_ability,
                            register_item, register_item_set,
+                           register_item_display,
                            register_sound_entry,
                            register_creature_display, register_creature_model,
                            register_talent, register_talent_tab,
                            register_spell_icon,
+                           register_spell_visual, register_spell_visual_kit,
                            register_gameobject_display,
-                           register_zone_intro_music)
+                           register_zone_intro_music,
+                           register_race, register_char_start_outfit)
 from .mpq_packer import MPQPacker, pack_map, MPQExtractor, extract_map
 from .blp_converter import convert_png_to_blp, image_to_blp, batch_convert, validate_blp
 from .minimap_pipeline import import_minimap_tiles, generate_test_minimaps

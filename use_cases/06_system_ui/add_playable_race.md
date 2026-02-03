@@ -299,9 +299,32 @@ Slots 10-14 and 17-23 are typically `-1` (empty) for starting characters.
 
 ## 7. Step 1: Register the Race in ChrRaces.dbc
 
-Use the low-level `DBCInjector` class to add a new record to ChrRaces.dbc. There is
-no high-level convenience function for this DBC because of its unusual field layout
-and the extreme rarity of the operation.
+pywowlib provides `register_race()` as a high-level convenience function for creating
+ChrRaces.dbc entries (69 fields, 276 bytes). It handles record construction, locstring
+packing, string block management, and record-size padding in a single call:
+
+```python
+from world_builder import register_race
+
+race_id = register_race(
+    dbc_dir=r'D:\modding\dbc',
+    race_id=12,
+    race_name="Naga",
+    faction_id=1,              # Human faction template (Alliance)
+    male_display_id=50,        # CreatureDisplayInfo FK for male model
+    female_display_id=51,      # CreatureDisplayInfo FK for female model
+    client_filestring="Human", # Reuse Human models initially (reskin approach)
+    alliance_side=0,           # 0 = Alliance, 1 = Horde
+    client_prefix="Na",
+    base_language=7,           # 7 = Common
+    flags=3,                   # 0x1 playable + 0x2 DK eligible
+    required_expansion=2,      # 2 = WotLK
+)
+print("Registered race ID:", race_id)
+```
+
+The low-level approach using `DBCInjector` directly is shown below for reference and
+for cases where you need full control over every field.
 
 ```python
 import struct
@@ -538,6 +561,36 @@ if __name__ == '__main__':
 
 Each race/class/gender combination needs a CharStartOutfit.dbc entry that defines
 what gear, bags, and items the character starts with.
+
+**Recommended approach** -- use the convenience wrapper:
+
+```python
+from world_builder import register_char_start_outfit
+
+# Define starting items (up to 24 slots)
+warrior_items = [
+    {'item_id': -1, 'display_id': -1, 'inv_type': -1},  # Head
+    {'item_id': -1, 'display_id': -1, 'inv_type': -1},  # Neck
+    {'item_id': -1, 'display_id': -1, 'inv_type': -1},  # Shoulders
+    {'item_id': 6096, 'display_id': 2311, 'inv_type': 4},  # Shirt
+    {'item_id': 25, 'display_id': 9987, 'inv_type': 5},    # Chest
+    # ... remaining slots ...
+]
+
+outfit_id = register_char_start_outfit(
+    dbc_dir=r'D:\modding\dbc',
+    race_id=12,
+    class_id=1,       # Warrior
+    sex_id=0,          # Male
+    items=warrior_items,
+    # outfit_id=None  -- auto-assigns next available ID
+)
+print("Created starting outfit ID:", outfit_id)
+```
+
+`register_char_start_outfit()` creates a CharStartOutfit.dbc entry (74 fields, 296 bytes) with the packed race/class/gender header and three parallel 24-element arrays for item IDs, display IDs, and inventory types. It handles record-size padding automatically.
+
+The low-level approach using `DBCInjector` directly is shown below for reference:
 
 ```python
 import struct
@@ -1818,7 +1871,7 @@ the coordinates in-game using `.gps` to verify they are on solid ground.
 
 | Topic | Guide | Relevance |
 |-------|-------|-----------|
-| DBC injector core API | `world_builder/dbc_injector.py` | Low-level `DBCInjector` class for all DBC manipulations. |
+| DBC injector core API | `world_builder/dbc_injector.py` | `register_race()` (ChrRaces.dbc), `register_char_start_outfit()` (CharStartOutfit.dbc), and low-level `DBCInjector` for CharBaseInfo.dbc. |
 | SQL generation | `world_builder/sql_generator.py` | Bulk SQL generation for creature_template and other tables. |
 | MPQ packing | `world_builder/mpq_packer.py` | Package modified DBC and texture files into client patches. |
 | Custom UI for race selection | `06_system_ui/custom_ui_frame.md` | AddOn development for modifying the character creation screen. |

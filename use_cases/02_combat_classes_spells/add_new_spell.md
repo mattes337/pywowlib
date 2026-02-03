@@ -3,7 +3,7 @@
 **Complexity**: Advanced |
 **DBC Files**: Spell.dbc, SpellIcon.dbc, SpellVisual.dbc |
 **SQL Tables**: spell_dbc, spell_linked_spell, spell_bonus_data |
-**pywowlib Modules**: `world_builder.dbc_injector.DBCInjector`, `world_builder.dbc_injector.register_spell`, `world_builder.dbc_injector.register_spell_icon`, `world_builder.spell_registry.SpellRegistry`
+**pywowlib Modules**: `world_builder.dbc_injector.DBCInjector`, `world_builder.dbc_injector.register_spell`, `world_builder.dbc_injector.register_spell_icon`, `world_builder.dbc_injector.register_spell_visual`, `world_builder.dbc_injector.register_spell_visual_kit`, `world_builder.spell_registry.SpellRegistry`
 
 ---
 
@@ -345,7 +345,39 @@ custom_icon_id = add_spell_icon(
 
 ## Step 4: Create a SpellVisual Entry
 
-SpellVisual.dbc controls the visual effects played during casting, impact, and channeling. For WotLK 3.3.5a (builds 3.2.0-3.3.5), the layout is:
+SpellVisual.dbc controls the visual effects played during casting, impact, and channeling.
+
+**Recommended approach** -- use the convenience wrappers:
+
+```python
+from world_builder import register_spell_visual, register_spell_visual_kit
+
+# Optionally create a custom visual kit first
+kit_id = register_spell_visual_kit(
+    dbc_dir=DBC_DIR,
+    start_anim_id=35,           # precast animation
+    anim_id=67,                 # cast animation
+    head_effect=123,            # SpellVisualEffectName FK
+    # kit_id=None  -- auto-assigns next available ID
+)
+
+# Create a spell visual that references the kit
+visual_id = register_spell_visual(
+    dbc_dir=DBC_DIR,
+    cast_kit=kit_id,
+    impact_kit=456,             # reuse a stock impact kit
+    has_missile=1,
+    # visual_id=None  -- auto-assigns next available ID
+)
+```
+
+`register_spell_visual()` creates a new SpellVisual.dbc entry (32 fields, 128 bytes) and returns the assigned visual ID. `register_spell_visual_kit()` creates a new SpellVisualKit.dbc entry (38 fields, 152 bytes) for defining the particle effects, animations, and sounds used by each visual phase.
+
+For most custom spells, the recommended approach is still to **reuse an existing SpellVisual ID** from a stock spell with similar visual characteristics. The convenience functions are most useful when you need a novel combination of effects.
+
+The full field layout and manual approach are documented below for reference.
+
+For WotLK 3.3.5a (builds 3.2.0-3.3.5), the layout is:
 
 ```
 Index   Field                        Type      Notes
@@ -382,7 +414,7 @@ Index   Field                        Type      Notes
 Total: 32 fields = 128 bytes per record
 ```
 
-**Important**: Creating custom visual kits (PrecastKit, CastKit, etc.) requires editing SpellVisualKit.dbc, SpellVisualKitModelAttach.dbc, and potentially SpellVisualEffectName.dbc. This is an extremely deep rabbit hole. For most custom spells, the recommended approach is to **reuse an existing SpellVisual ID** from a stock spell that has similar visual characteristics.
+**Important**: Creating custom visual kits (PrecastKit, CastKit, etc.) requires editing SpellVisualKit.dbc, SpellVisualKitModelAttach.dbc, and potentially SpellVisualEffectName.dbc. pywowlib provides `register_spell_visual_kit()` to create SpellVisualKit.dbc entries (38 fields, 152 bytes), but the deeper attachment and effect name DBCs still require low-level `DBCInjector` work. For most custom spells, the recommended approach is to **reuse an existing SpellVisual ID** from a stock spell that has similar visual characteristics.
 
 ```python
 def add_spell_visual(dbc_dir, visual_id=None,

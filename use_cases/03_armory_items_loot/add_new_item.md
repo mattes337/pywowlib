@@ -1,6 +1,6 @@
 # Add New Item
 
-**Complexity:** Advanced | **Estimated Time:** 30-60 minutes | **Files Modified:** 3+ DBC files, 1+ SQL files, MPQ archive | **Key APIs:** `world_builder.dbc_injector.register_item`, `world_builder.sql_generator.SQLGenerator`
+**Complexity:** Advanced | **Estimated Time:** 30-60 minutes | **Files Modified:** 3+ DBC files, 1+ SQL files, MPQ archive | **Key APIs:** `world_builder.dbc_injector.register_item`, `world_builder.dbc_injector.register_item_display`, `world_builder.sql_generator.SQLGenerator`
 
 ## Overview
 
@@ -225,6 +225,49 @@ dbc.write(filepath)
 
 ## Step 3: Create the ItemDisplayInfo.dbc Entry
 
+### Python Code: Register ItemDisplayInfo.dbc Record (Recommended)
+
+The `register_item_display()` convenience function handles record construction,
+auto-ID assignment, and DBC file I/O in a single call:
+
+```python
+from world_builder import register_item_display
+
+# Create a display entry for a custom one-handed sword
+display_id = register_item_display(
+    dbc_dir='C:/wow335/DBFilesClient',
+    display_id=80001,                 # Explicit ID (omit for auto max_id + 1)
+    model_left='Item\\ObjectComponents\\Weapon\\Sword_1H_Custom.m2',
+    icon='INV_Sword_Custom',
+    group_sound_index=6,              # Metal weapon sounds
+    # All other fields default to 0 / empty string
+)
+print("Registered ItemDisplayInfo.dbc entry:", display_id)
+```
+
+**`register_item_display()` Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `dbc_dir` | str | (required) | Path to directory containing ItemDisplayInfo.dbc |
+| `display_id` | int/None | None | Specific display ID, or None for auto (max_id + 1) |
+| `model_left` | str | `''` | Left-hand .m2 model path |
+| `model_right` | str | `''` | Right-hand .m2 model path |
+| `model_texture_left` | str | `''` | Left-hand model texture override |
+| `model_texture_right` | str | `''` | Right-hand model texture override |
+| `icon` | str | `''` | Primary inventory icon name (without path or .blp) |
+| `icon2` | str | `''` | Secondary inventory icon |
+| `geoset_groups` | list | `[0,0,0]` | Geoset group values for body mesh toggling |
+| `flags` | int | `0` | Display flags |
+| `spell_visual_id` | int | `0` | SpellVisual.dbc FK for enchant glow |
+| `group_sound_index` | int | `0` | Sound group for equip/unequip/sheathe |
+| `helmet_geoset_vis` | list | `[0,0]` | Helmet geoset visibility overrides |
+| `body_textures` | list | `[''] * 8` | Body texture override strings (up to 8) |
+| `item_visual` | int | `0` | ItemVisuals.dbc FK for permanent visual effects |
+| `particle_color_id` | int | `0` | ParticleColor.dbc FK |
+
+**Returns:** `int` -- the assigned display ID.
+
 ### ItemDisplayInfo.dbc Field Layout (WotLK 3.3.5a)
 
 The WotLK ItemDisplayInfo.dbc layout (builds 3.0.1.8303 - 3.3.5.12340) has the following fields. String fields are stored as uint32 offsets into the string block.
@@ -259,7 +302,11 @@ The WotLK ItemDisplayInfo.dbc layout (builds 3.0.1.8303 - 3.3.5.12340) has the f
 
 **Total: 25 fields = 100 bytes per record**
 
-### Python Code: Inject ItemDisplayInfo.dbc Record
+### Low-Level Alternative
+
+If you need finer control over the binary record (e.g., batch-injecting many
+records without re-reading the DBC each time), you can still use `DBCInjector`
+directly:
 
 ```python
 import struct
@@ -805,7 +852,7 @@ This example creates a complete item end-to-end: Item.dbc + ItemDisplayInfo.dbc 
 Complete example: Create a custom epic 2H mace for WoW WotLK 3.3.5a.
 
 This script:
-1. Injects an ItemDisplayInfo.dbc entry for the visual appearance
+1. Registers an ItemDisplayInfo.dbc entry via register_item_display()
 2. Registers an Item.dbc entry via register_item()
 3. Generates item_template SQL for server-side stats
 
@@ -813,10 +860,8 @@ Prerequisites:
 - Extracted DBC files in DBC_DIR
 - pywowlib on Python path
 """
-import struct
 import os
-from world_builder import register_item
-from world_builder.dbc_injector import DBCInjector
+from world_builder import register_item, register_item_display
 from world_builder.sql_generator import SQLGenerator
 
 # Configuration
@@ -827,43 +872,17 @@ ITEM_ID = 90010
 DISPLAY_ID = 80010
 
 # ----------------------------------------------------------------
-# Step 1: Create ItemDisplayInfo.dbc entry
+# Step 1: Create ItemDisplayInfo.dbc entry via register_item_display()
 # ----------------------------------------------------------------
-# ItemDisplayInfo.dbc still requires low-level DBCInjector for custom
-# display entries. If you can reuse an existing display ID (e.g. from
-# a Blizzard item), skip this step entirely and pass that ID to
-# register_item() below.
-idi_path = os.path.join(DBC_DIR, 'ItemDisplayInfo.dbc')
-idi_dbc = DBCInjector(idi_path)
-
-# Add strings to string block
-model_off = idi_dbc.add_string(
-    'Item\\ObjectComponents\\Weapon\\Mace_2H_Custom.m2'
+# If you can reuse an existing display ID (e.g. from a Blizzard item),
+# skip this step entirely and pass that ID to register_item() below.
+register_item_display(
+    dbc_dir=DBC_DIR,
+    display_id=DISPLAY_ID,
+    model_left='Item\\ObjectComponents\\Weapon\\Mace_2H_Custom.m2',
+    icon='INV_Mace_2H_Custom',
+    group_sound_index=21,  # 2H mace sounds
 )
-icon_off = idi_dbc.add_string('INV_Mace_2H_Custom')
-
-# Build 100-byte record (25 uint32 fields)
-idi_buf = bytearray()
-idi_buf += struct.pack('<I', DISPLAY_ID)       # ID
-idi_buf += struct.pack('<I', model_off)         # ModelName[0]
-idi_buf += struct.pack('<I', 0)                 # ModelName[1]
-idi_buf += struct.pack('<I', 0)                 # ModelTexture[0]
-idi_buf += struct.pack('<I', 0)                 # ModelTexture[1]
-idi_buf += struct.pack('<I', icon_off)          # InventoryIcon[0]
-idi_buf += struct.pack('<I', 0)                 # InventoryIcon[1]
-idi_buf += struct.pack('<III', 0, 0, 0)         # GeosetGroup[3]
-idi_buf += struct.pack('<I', 0)                 # Flags
-idi_buf += struct.pack('<I', 0)                 # SpellVisualID
-idi_buf += struct.pack('<I', 21)                # GroupSoundIndex (mace)
-idi_buf += struct.pack('<II', 0, 0)             # HelmetGeosetVisID[2]
-for _ in range(8):
-    idi_buf += struct.pack('<I', 0)             # Texture[8]
-idi_buf += struct.pack('<I', 0)                 # ItemVisual
-idi_buf += struct.pack('<I', 0)                 # ParticleColorID
-
-assert len(idi_buf) == 100
-idi_dbc.records.append(bytes(idi_buf))
-idi_dbc.write(idi_path)
 print("[OK] ItemDisplayInfo.dbc: added entry {}".format(DISPLAY_ID))
 
 # ----------------------------------------------------------------
@@ -1056,6 +1075,7 @@ print("  5. Restart worldserver and clear client cache")
 - **[Custom Crafting Recipe](custom_crafting_recipe.md)** -- Create a profession recipe that crafts your custom item
 - **pywowlib API Reference:**
   - `world_builder.dbc_injector.register_item()` -- Convenience wrapper for Item.dbc record creation (auto-ID, 8 fields / 32 bytes)
-  - `world_builder.dbc_injector.DBCInjector` -- Low-level DBC read/write (needed for ItemDisplayInfo.dbc custom display entries)
+  - `world_builder.dbc_injector.register_item_display()` -- Convenience wrapper for ItemDisplayInfo.dbc record creation (auto-ID, 25 fields / 100 bytes)
+  - `world_builder.dbc_injector.DBCInjector` -- Low-level DBC read/write for advanced batch operations
   - `world_builder.sql_generator.SQLGenerator.add_items()` -- Item SQL generation
   - `world_builder.sql_generator.ItemBuilder.add_item()` -- Single item builder

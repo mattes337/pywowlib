@@ -41,7 +41,7 @@ the current `pywowlib` `world_builder` module.
 | 8 | [Modify Talent Tree](#8-modify-talent-tree) | Full Auto | Complete | -- | -- |
 | 9 | [Change Racial Traits](#9-change-racial-traits) | Full Auto | Complete | -- | -- |
 | 10 | [Add New Class](#10-add-new-class) | Not Feasible | Minimal | C++ core rewrite | No |
-| 11 | [Add New Item](#11-add-new-item) | Full Auto | Mostly | 3D modeling (custom models) | -- |
+| 11 | [Add New Item](#11-add-new-item) | Full Auto | Complete | 3D modeling (custom models) | -- |
 | 12 | [Create Item Set](#12-create-item-set) | Full Auto | Complete | -- | -- |
 | 13 | [Modify Loot Tables](#13-modify-loot-tables) | Full Auto | Complete | -- | -- |
 | 14 | [Custom Crafting Recipe](#14-custom-crafting-recipe) | Full Auto | Complete | -- | -- |
@@ -262,19 +262,16 @@ allocation with Lua/JSON export.
 - `register_spell()` -- Spell.dbc (234 fields, 936 bytes) with named parameters
 - `modify_spell()` -- modify existing spell records by field name
 - `register_spell_icon()` -- SpellIcon.dbc (2 fields, 8 bytes)
+- `register_spell_visual()` -- SpellVisual.dbc (32 fields, 128 bytes) with kit references
+- `register_spell_visual_kit()` -- SpellVisualKit.dbc (38 fields, 152 bytes) with effects/anims
 - `SpellRegistry` -- ID allocation, name tracking, Lua/JSON export
 - `DBCInjector` (low-level) -- can read/write any DBC including Spell.dbc
 - `SQLGenerator` -- server-side `spell_linked_spell`, `spell_bonus_data`
 - `ScriptGenerator` -- Eluna Lua for custom spell handlers
 
-**Remaining gaps:**
-- `SpellVisual.dbc` -- spell visual effects (no schema; reuse existing visual IDs)
-- `SpellVisualKit.dbc` -- visual kit composition (no schema)
-
 **External tools:**
 | Tool | Purpose | Integrate? |
 |------|---------|------------|
-| `SpellVisual.dbc` schema | Visual effects | Low priority -- reuse existing visual IDs for now |
 | Server C++ | Custom spell mechanics | **No** -- requires core modification |
 
 **AI agent opportunity:** Fully automatable. An AI agent can design spell parameters
@@ -389,31 +386,30 @@ integrating** -- the recommendation is to reskin/replace an existing class.
 
 **File:** [`03_armory_items_loot/add_new_item.md`](03_armory_items_loot/add_new_item.md)
 
-**Automation: Full Auto** | **pywowlib: Mostly Complete**
+**Automation: Full Auto** | **pywowlib: Complete**
 
 `register_item()` creates `Item.dbc` records (8 fields, 32 bytes) with class,
-subclass, material, display info, and inventory type. `SQLGenerator.add_item()`
+subclass, material, display info, and inventory type. `register_item_display()`
+creates `ItemDisplayInfo.dbc` records (25 fields, 100 bytes) with model paths,
+textures, geoset groups, and visual effects. `SQLGenerator.add_item()`
 generates complete `item_template` INSERT statements with all stat columns.
 
 **What pywowlib covers:**
 - `register_item()` -- Item.dbc (8 fields, 32 bytes) client-side item registration
+- `register_item_display()` -- ItemDisplayInfo.dbc (25 fields, 100 bytes) model/texture/icon setup
 - `SQLGenerator.add_item()` -- full `item_template` with all stat fields
 - `SQLGenerator.add_loot()` -- loot table entries
 - `MPQPacker` -- pack custom M2/BLP models
 - `blp_converter` -- texture conversion
 
-**Remaining gap:** No `ItemDisplayInfo.dbc` schema (model paths, texture paths,
-geoset groups, visual effects). Not needed when reusing existing display IDs
-(which covers the vast majority of use cases).
-
 **External tools:**
 | Tool | Purpose | Integrate? |
 |------|---------|------------|
-| `ItemDisplayInfo.dbc` schema | Visual/model link | Low priority -- existing display IDs cover most needs |
 | 3D modeling (Blender + M2 export) | Custom weapon/armor models | **No** -- creative tooling, out of scope |
 
-**AI agent opportunity:** Fully automatable for items using existing display IDs
-(which covers most cases -- recolored existing models). Custom models remain manual.
+**AI agent opportunity:** Fully automatable. Most items reuse existing display IDs.
+For custom visuals, `register_item_display()` creates display entries with model
+paths, textures, and geoset groups. Custom 3D models remain manual.
 
 ---
 
@@ -710,12 +706,14 @@ far beyond file generation: `ChrRaces.dbc` (69 fields), `CharBaseInfo.dbc`
 every helmet model in the game (3000+ `.m2` files) to the new head geometry.
 
 **What pywowlib covers:**
-- `DBCInjector` (low-level) -- can write ChrRaces.dbc, CharBaseInfo.dbc, CharStartOutfit.dbc
+- `register_race()` -- ChrRaces.dbc (69 fields, 276 bytes) with race name, display IDs, faction, language
+- `register_char_start_outfit()` -- CharStartOutfit.dbc (74 fields, 296 bytes) with starting items
+- `DBCInjector` (low-level) -- can write CharBaseInfo.dbc and other race-related DBCs
 - `SQLGenerator` -- playercreateinfo, player_levelstats
 
-**Gap:** No DBC schemas for ChrRaces, CharBaseInfo, or CharStartOutfit.
-Fundamental requirement for C++ core changes. Mass M2 model editing for helmet
-geometry is not supported.
+**Gap:** Adding a truly new playable race requires C++ core changes (race bitmask
+in `SharedDefines.h`, `Player.cpp` validation) and mass M2 model editing for
+helmet geometry. These are fundamental engine limitations outside pywowlib's scope.
 
 **External tools:**
 | Tool | Purpose | Integrate? |
@@ -725,8 +723,8 @@ geometry is not supported.
 | Client binary patcher | Race count limit | **No** -- reverse engineering |
 
 **Recommendation:** Reskin an existing race instead (e.g., Blood Elf -> High Elf).
-This avoids C++ changes and helmet refitting entirely. pywowlib could support
-this with `ChrRaces.dbc` and `CharStartOutfit.dbc` schemas.
+pywowlib's `register_race()` and `register_char_start_outfit()` fully support
+this approach, avoiding C++ changes and helmet refitting entirely.
 
 ---
 
@@ -806,14 +804,11 @@ status of each originally-identified gap.
 | **`ZoneIntroMusicTable.dbc` schema** (5 fields, 20 bytes) | #4 | `register_zone_intro_music()` |
 | **AddOn scaffold generator** | #24 | `generate_addon()` |
 | **ADT doodad/WMO insertion API** | #3 | `add_doodad_to_adt()`, `add_wmo_to_adt()` |
-
-### Remaining Gaps (nice to have)
-
-| Schema/Feature | Use Cases | Effort | Notes |
-|----------------|-----------|--------|-------|
-| `ItemDisplayInfo.dbc` schema (26 fields) | #11 | Medium | Not needed when reusing existing display IDs |
-| `SpellVisual.dbc` / `SpellVisualKit.dbc` | #6 | Medium-High | Reuse existing visual IDs for now |
-| `ChrRaces.dbc` + `CharStartOutfit.dbc` | #23 (reskin only) | Medium | Only useful for race reskins; new races need C++ core changes |
+| **`ItemDisplayInfo.dbc` schema** (25 fields, 100 bytes) | #11 | `register_item_display()` |
+| **`SpellVisual.dbc` schema** (32 fields, 128 bytes) | #6 | `register_spell_visual()` |
+| **`SpellVisualKit.dbc` schema** (38 fields, 152 bytes) | #6 | `register_spell_visual_kit()` |
+| **`ChrRaces.dbc` schema** (69 fields, 276 bytes) | #23 | `register_race()` |
+| **`CharStartOutfit.dbc` schema** (74 fields, 296 bytes) | #23 | `register_char_start_outfit()` |
 
 ### Not Worth Integrating
 
