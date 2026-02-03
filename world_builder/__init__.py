@@ -28,7 +28,9 @@ from .dbc_injector import (DBCInjector, register_map, register_area,
                            register_zone_intro_music,
                            register_race, register_char_start_outfit)
 from .mpq_packer import MPQPacker, pack_map, MPQExtractor, extract_map
-from .blp_converter import convert_png_to_blp, image_to_blp, batch_convert, validate_blp
+from .blp_converter import (convert_png_to_blp, image_to_blp, batch_convert, validate_blp,
+                            read_blp, read_blp_info, convert_blp_to_png,
+                            batch_convert_blp_to_png)
 from .minimap_pipeline import import_minimap_tiles, generate_test_minimaps
 from .terrain_sculptor import (TerrainSculptor, sculpt_zone, sculpt_for_adt_composer,
                                import_heightmap_from_adt, import_texture_rules_from_adt)
@@ -48,6 +50,9 @@ from .zone_exporter import ZoneExporter, export_zone, export_dungeon
 from .zone_importer import ZoneImporter, import_zone, import_dungeon
 from .vmap_generator import generate_vmaps, generate_mmaps, generate_server_data
 from .addon_generator import generate_addon
+from .m2_gltf_writer import M2GltfWriter, M2GltfReader
+from .adt_gltf_writer import (adt_to_heightmap, adt_to_gltf,
+                               heightmap_to_adt, gltf_to_adt)
 
 
 def build_zone(name, output_dir, coords=None, heightmap=None, texture_paths=None,

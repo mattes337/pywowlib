@@ -4,12 +4,17 @@ ADT <-> JSON bidirectional converter for WoW 3.3.5a (WotLK) terrain tiles.
 
 Converts binary ADT (terrain tile) files to human-readable JSON and back.
 Parses the chunk-based binary format directly using struct for zero
-external dependencies.
+external dependencies. Also supports terrain visualization exports
+(heightmap PNG, 3D glTF mesh) via the world_builder.adt_gltf_writer module.
 
 Usage:
   python adt_converter.py adt2json <input.adt> [-o output.json]
   python adt_converter.py json2adt <input.json> [-o output.adt]
   python adt_converter.py adt2json --dir <adt_dir> [-o output_dir]
+  python adt_converter.py adt2heightmap <input.adt> [-o output.png]
+  python adt_converter.py adt2gltf <input.adt> [-o output.glb]
+  python adt_converter.py heightmap2adt <input.png> [-o output.adt]
+  python adt_converter.py gltf2adt <input.glb> [-o output.adt]
 """
 
 import struct
@@ -18,6 +23,11 @@ import os
 import sys
 import math
 import argparse
+
+# Add the project root to sys.path so we can import world_builder
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 
 # ---------------------------------------------------------------------------
@@ -1224,6 +1234,47 @@ def round_trip_test(adt_path):
 
 
 # ---------------------------------------------------------------------------
+# Batch export helpers
+# ---------------------------------------------------------------------------
+
+def _batch_export(adt_dir, output_dir, ext, label, export_fn):
+    """Batch-convert all .adt files in a directory using an export function.
+
+    Args:
+        adt_dir: Directory containing .adt files.
+        output_dir: Output directory (default: adt_dir/<label>).
+        ext: Output file extension (e.g. '.png', '.glb').
+        label: Subfolder name and display label.
+        export_fn: Callable(adt_json_dict, output_path).
+    """
+    if not output_dir:
+        output_dir = os.path.join(adt_dir, label)
+    os.makedirs(output_dir, exist_ok=True)
+
+    converted = 0
+    failed = 0
+    print("Converting all .adt files in: {}".format(adt_dir))
+    print("Output directory: {}\n".format(output_dir))
+
+    for filename in sorted(os.listdir(adt_dir)):
+        if not filename.lower().endswith('.adt'):
+            continue
+        adt_path = os.path.join(adt_dir, filename)
+        out_name = os.path.splitext(filename)[0] + ext
+        out_path = os.path.join(output_dir, out_name)
+        try:
+            data = adt_to_json(adt_path)
+            export_fn(data, out_path)
+            converted += 1
+            print("  OK  {}".format(filename))
+        except Exception as e:
+            failed += 1
+            print("  FAIL  {:50s} -- {}".format(filename, e))
+
+    print("\n{} converted, {} failed".format(converted, failed))
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -1246,6 +1297,42 @@ def main():
     p_j2a = subparsers.add_parser('json2adt', help='Convert JSON back to ADT')
     p_j2a.add_argument('input', help='Input .json file')
     p_j2a.add_argument('-o', '--output', help='Output .adt file')
+
+    # -- adt2heightmap ---------------------------------------------------
+    p_hm = subparsers.add_parser('adt2heightmap',
+                                  help='Generate heightmap PNG from ADT')
+    p_hm.add_argument('input', nargs='?', help='Input .adt file')
+    p_hm.add_argument('-o', '--output', help='Output .png file')
+    p_hm.add_argument('--dir',
+                       help='Batch-convert all .adt files in a directory')
+
+    # -- adt2gltf -------------------------------------------------------
+    p_gl = subparsers.add_parser('adt2gltf',
+                                  help='Generate 3D terrain mesh from ADT')
+    p_gl.add_argument('input', nargs='?', help='Input .adt file')
+    p_gl.add_argument('-o', '--output', help='Output .glb file')
+    p_gl.add_argument('--dir',
+                       help='Batch-convert all .adt files in a directory')
+
+    # -- heightmap2adt ---------------------------------------------------
+    p_hm2a = subparsers.add_parser('heightmap2adt',
+                                    help='Create ADT from heightmap PNG')
+    p_hm2a.add_argument('input', help='Input heightmap PNG (129x129)')
+    p_hm2a.add_argument('-o', '--output', help='Output .adt file')
+    p_hm2a.add_argument('--height-min', type=float, default=0.0,
+                         help='Height for black pixels (default: 0.0)')
+    p_hm2a.add_argument('--height-max', type=float, default=100.0,
+                         help='Height for white pixels (default: 100.0)')
+    p_hm2a.add_argument('--area-id', type=int, default=0,
+                         help='Area ID for chunks (default: 0)')
+
+    # -- gltf2adt -------------------------------------------------------
+    p_gl2a = subparsers.add_parser('gltf2adt',
+                                    help='Create ADT from glTF terrain mesh')
+    p_gl2a.add_argument('input', help='Input .glb terrain mesh')
+    p_gl2a.add_argument('-o', '--output', help='Output .adt file')
+    p_gl2a.add_argument('--area-id', type=int, default=0,
+                         help='Area ID for chunks (default: 0)')
 
     # -- roundtrip -------------------------------------------------------
     p_rt = subparsers.add_parser('roundtrip',
@@ -1282,6 +1369,52 @@ def main():
         output = args.output or os.path.splitext(args.input)[0] + '.adt'
         json_to_adt(json_data, output)
         n_chunks = len(json_data.get('terrain_chunks', []))
+        print("{} -> {} ({} terrain chunks)".format(
+            args.input, output, n_chunks))
+
+    elif args.command == 'adt2heightmap':
+        from world_builder.adt_gltf_writer import adt_to_heightmap
+        if args.dir:
+            _batch_export(args.dir, args.output, '.png', 'heightmap',
+                          adt_to_heightmap)
+        elif args.input:
+            data = adt_to_json(args.input)
+            output = args.output or (
+                os.path.splitext(args.input)[0] + '_heightmap.png')
+            adt_to_heightmap(data, output)
+            print("{} -> {}".format(args.input, output))
+        else:
+            p_hm.print_help()
+
+    elif args.command == 'adt2gltf':
+        from world_builder.adt_gltf_writer import adt_to_gltf
+        if args.dir:
+            _batch_export(args.dir, args.output, '.glb', 'gltf',
+                          adt_to_gltf)
+        elif args.input:
+            data = adt_to_json(args.input)
+            output = args.output or (
+                os.path.splitext(args.input)[0] + '.glb')
+            adt_to_gltf(data, output)
+            print("{} -> {}".format(args.input, output))
+        else:
+            p_gl.print_help()
+
+    elif args.command == 'heightmap2adt':
+        from world_builder.adt_gltf_writer import heightmap_to_adt
+        adt_json = heightmap_to_adt(args.input, args.height_min,
+                                    args.height_max, args.area_id)
+        output = args.output or os.path.splitext(args.input)[0] + '.adt'
+        json_to_adt(adt_json, output)
+        print("{} -> {} (height range {:.1f} - {:.1f})".format(
+            args.input, output, args.height_min, args.height_max))
+
+    elif args.command == 'gltf2adt':
+        from world_builder.adt_gltf_writer import gltf_to_adt
+        adt_json = gltf_to_adt(args.input, args.area_id)
+        output = args.output or os.path.splitext(args.input)[0] + '.adt'
+        json_to_adt(adt_json, output)
+        n_chunks = len(adt_json.get('terrain_chunks', []))
         print("{} -> {} ({} terrain chunks)".format(
             args.input, output, n_chunks))
 

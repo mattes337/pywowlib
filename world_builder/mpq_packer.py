@@ -171,12 +171,18 @@ class MPQPacker:
                  fallback directory if StormLib creation is unavailable.
         """
         if not _HAS_STORM_CREATE:
-            log.warning(
+            log.info(
                 "StormLib archive creation API not available. "
-                "Falling back to directory structure. "
-                "Use an external MPQ tool to pack the output directory."
+                "Trying pure-Python MPQ writer."
             )
-            return self.build_directory()
+            try:
+                return self.build_mpq_pure_python()
+            except Exception as e:
+                log.warning(
+                    "Pure-Python MPQ writer failed: %s. "
+                    "Falling back to directory structure.", e
+                )
+                return self.build_directory()
 
         mpq_path = os.path.join(self.output_dir, self.patch_name)
         os.makedirs(self.output_dir, exist_ok=True)
@@ -231,6 +237,30 @@ class MPQPacker:
             if tmp_dir is not None:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
 
+        return mpq_path
+
+    def build_mpq_pure_python(self):
+        """
+        Create an MPQ archive using the pure-Python writer.
+
+        This is a fallback when StormLib is not available. Files are
+        stored uncompressed as single units for simplicity.
+
+        Returns:
+            str: Path to the created MPQ file.
+        """
+        from tools.mpq_packer import PurePythonMPQWriter
+
+        writer = PurePythonMPQWriter()
+        for mpq_path, data in self.files.items():
+            writer.add_file(mpq_path, data)
+
+        mpq_path = os.path.join(self.output_dir, self.patch_name)
+        os.makedirs(self.output_dir, exist_ok=True)
+        writer.write(mpq_path)
+
+        log.info("Created MPQ (pure Python): %s (%d files)",
+                 mpq_path, len(self.files))
         return mpq_path
 
 
