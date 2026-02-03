@@ -15,12 +15,9 @@ class DBCString:
             if ofs == 0:    # if offset is 0 (empty string field)
                 break
             char = f.read(1)
-            # print(char)
-            # print(f.tell())
-            if char != b'\0':
-                strng += char
-            else:
+            if not char or char == b'\0':
                 break
+            strng += char
         f.seek(pos)
 
         return strng.decode('utf-8')

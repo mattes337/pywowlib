@@ -49,7 +49,11 @@ class DBDefinition:
             if not real_type:
                 raise TypeError('\nUnknown DBD type \"{}\"'.format(type_name))
 
-            self.definition[entry.column] = real_type
+            if entry.array_size and entry.array_size > 1:
+                for i in range(entry.array_size):
+                    self.definition["{}_{}".format(entry.column, i)] = real_type
+            else:
+                self.definition[entry.column] = real_type
 
     def __getitem__(self, item):
         return self.definition[item]

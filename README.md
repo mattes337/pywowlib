@@ -142,6 +142,39 @@ sculptor.add_texture_rule("Tileset\\Grass.blp", min_height=0, max_height=40)
 heightmap, textures = sculptor.generate(128, 128)
 ```
 
+## Converter Tools
+
+The `tools/` directory contains bidirectional binary-to-JSON converters for inspecting, editing, and reconstructing WoW 3.3.5a game data files. Each converter supports single-file and batch (`--dir`) modes.
+
+| Tool | Format | Description |
+|------|--------|-------------|
+| `dbc_converter.py` | DBC | Client database tables with DBD schema-aware named fields |
+| `adt_converter.py` | ADT | Terrain tiles (heightmaps, textures, doodads, WMOs) |
+| `wdt_converter.py` | WDT | World layout tables (active tile grids) |
+| `wdl_converter.py` | WDL | Low-resolution flight-view heightmaps |
+| `wmo_converter.py` | WMO | World map objects -- root files and group geometry |
+
+### Usage
+
+```bash
+# Single file conversion
+python tools/dbc_converter.py dbc2json AreaTable.dbc -o AreaTable.json
+python tools/adt_converter.py adt2json Azeroth_32_48.adt -o Azeroth_32_48.json
+python tools/wmo_converter.py wmo2json Stormwind.wmo -o Stormwind.json
+
+# Batch convert entire directories
+python tools/dbc_converter.py dbc2json --dir ./dbc_files -o ./json_output
+python tools/adt_converter.py adt2json --dir ./World/Maps/Azeroth -o ./adt_json
+python tools/wmo_converter.py wmo2json --dir ./World/wmo/Buildings -o ./wmo_json
+
+# Round-trip: JSON back to binary
+python tools/dbc_converter.py json2dbc AreaTable.json -o AreaTable.dbc
+python tools/adt_converter.py json2adt Azeroth_32_48.json -o Azeroth_32_48.adt
+python tools/wmo_converter.py json2wmo Stormwind.json -o Stormwind.wmo
+```
+
+The DBC converter uses DBD schema definitions for type-aware decoding with named fields (236 of 247 WotLK tables have named schemas). The ADT converter preserves all chunk data including MCNK sub-chunks, alpha maps, and shadow maps. The WMO converter auto-detects root vs. group files and handles materials, portals, doodad sets, BSP trees, and vertex data.
+
 ## Supported File Formats
 
 | Format | Description | 3.3.5a | Other Versions | Notes |

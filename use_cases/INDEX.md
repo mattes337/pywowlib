@@ -824,3 +824,35 @@ status of each originally-identified gap.
 | Client binary patching | Reverse engineering, not file generation |
 | 3D modeling tools (Blender, etc.) | Creative tooling, out of scope |
 | M2 model editing | Per-model manual work, no batch automation path |
+
+---
+
+## Converter Tools
+
+The `tools/` directory provides bidirectional binary-to-JSON converters for all major WoW
+3.3.5a file formats. These support data inspection, manual JSON editing, and round-trip
+reconstruction -- useful for debugging, auditing, and understanding game data before
+programmatic modification via the world builder APIs.
+
+| Tool | Format | Capabilities |
+|------|--------|-------------|
+| `dbc_converter.py` | DBC | DBD schema-aware named fields for 236/247 WotLK tables; generic fallback for the rest |
+| `adt_converter.py` | ADT | Full chunk-level terrain data: heightmaps, textures, alpha maps, doodad/WMO placements |
+| `wdt_converter.py` | WDT | Active tile grid with ASCII visualization; reads via `wdt_generator.read_wdt()` |
+| `wdl_converter.py` | WDL | Low-res flight-view heightmaps with outer 17x17 and inner 16x16 grids per tile |
+| `wmo_converter.py` | WMO | Auto-detects root vs. group files; materials, portals, doodad sets, BSP trees, geometry |
+
+All converters support `--dir` for batch conversion and produce lossless round-trip output
+(binary → JSON → binary produces identical files).
+
+**Typical workflow:**
+
+1. Extract binary files from MPQ archives using `MPQExtractor` or external tools
+2. Batch-convert to JSON for inspection: `python tools/dbc_converter.py dbc2json --dir ./dbc_files -o ./json`
+3. Review/edit JSON as needed
+4. Convert back to binary: `python tools/dbc_converter.py json2dbc edited.json -o output.dbc`
+5. Pack modified files into MPQ patches via `MPQPacker`
+
+These tools complement every use case above by enabling data-driven debugging -- for example,
+inspecting existing `Spell.dbc` records before using `modify_spell()`, or reviewing ADT
+terrain data before inserting doodads via `add_doodad_to_adt()`.
