@@ -1,6 +1,6 @@
 # Add New Item
 
-**Complexity:** Advanced | **Estimated Time:** 30-60 minutes | **Files Modified:** 3+ DBC files, 1+ SQL files, MPQ archive
+**Complexity:** Advanced | **Estimated Time:** 30-60 minutes | **Files Modified:** 3+ DBC files, 1+ SQL files, MPQ archive | **Key APIs:** `world_builder.dbc_injector.register_item`, `world_builder.sql_generator.SQLGenerator`
 
 ## Overview
 
@@ -84,80 +84,95 @@ The WotLK Item.dbc has 8 fields per record, each 32 bits (4 bytes), for a total 
 | 6 | 24 | InventoryType | uint32 | Equipment slot (see reference table below) |
 | 7 | 28 | SheatheType | uint32 | Where weapon is drawn when sheathed (0=None, 1=TwoHandLeft, 2=TwoHandRight, 3=Staff/Polearm back, 4=Shield left, 5=Quiver right hip, 6=Quiver back, 7=OneHand left hip) |
 
-### Python Code: Inject Item.dbc Record
+### Python Code: Register Item.dbc Record (Recommended)
+
+The `register_item()` convenience function handles record construction, auto-ID
+assignment, and DBC file I/O in a single call:
+
+```python
+from world_builder import register_item
+
+# Register a one-handed sword in Item.dbc
+item_id = register_item(
+    dbc_dir='C:/wow335/DBFilesClient',
+    item_id=90001,            # Explicit ID (omit for auto max_id + 1)
+    class_id=2,               # Weapon
+    subclass_id=7,            # Sword (one-handed)
+    material=1,               # Metal
+    display_info_id=80001,    # FK to ItemDisplayInfo.dbc
+    inventory_type=13,        # INVTYPE_WEAPON (one-hand)
+    sheathe_type=3,           # Left hip sheathe
+    sound_override=-1,        # Use default sword sounds (default)
+)
+print("Registered Item.dbc entry:", item_id)
+```
+
+**`register_item()` Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `dbc_dir` | str | (required) | Path to directory containing Item.dbc |
+| `item_id` | int/None | None | Specific item ID, or None for auto (max_id + 1) |
+| `class_id` | int | 0 | Item class (0=Consumable, 2=Weapon, 4=Armor) |
+| `subclass_id` | int | 0 | Subclass within class |
+| `material` | int | 0 | Material type (0=undefined, 1=metal, 2=wood, etc.) |
+| `display_info_id` | int | 0 | FK to ItemDisplayInfo.dbc |
+| `inventory_type` | int | 0 | Equipment slot (0=non-equip, 1=head, 5=chest, etc.) |
+| `sheathe_type` | int | 0 | Sheathe type (0=none, 1=2h-weapon, etc.) |
+| `sound_override` | int | -1 | Sound override subclass (-1 = use SubclassID) |
+
+**Returns:** `int` -- the assigned item ID.
+
+### Auto-ID Assignment
+
+When `item_id` is omitted (or set to `None`), `register_item()` reads the
+current highest ID from Item.dbc and assigns `max_id + 1` automatically. This is
+useful for batch workflows where you don't need a specific entry number:
+
+```python
+from world_builder import register_item
+
+# Let the library assign the next available ID
+auto_id = register_item(
+    dbc_dir='C:/wow335/DBFilesClient',
+    class_id=4,               # Armor
+    subclass_id=4,            # Plate
+    material=6,               # Plate
+    display_info_id=51382,    # Reuse existing Blizzard display
+    inventory_type=5,         # Chest
+)
+print("Auto-assigned item ID:", auto_id)
+```
+
+### Low-Level Alternative
+
+If you need finer control over the binary record (e.g., batch-injecting many
+records without re-reading the DBC each time), you can still use `DBCInjector`
+directly:
 
 ```python
 import struct
 from world_builder.dbc_injector import DBCInjector
 
-def create_item_dbc_entry(
-    dbc_dir,
-    item_id,
-    class_id,
-    subclass_id,
-    display_info_id,
-    inventory_type,
-    material=1,
-    sound_override=-1,
-    sheathe_type=0,
-):
-    """
-    Create a new Item.dbc record for WotLK 3.3.5a.
+filepath = 'C:/wow335/DBFilesClient/Item.dbc'
+dbc = DBCInjector(filepath)
 
-    Args:
-        dbc_dir: Path to directory containing Item.dbc.
-        item_id: Unique item ID (must match item_template.entry).
-        class_id: Item class (0=Consumable, 2=Weapon, 4=Armor, etc.).
-        subclass_id: Item subclass (depends on class_id).
-        display_info_id: FK to ItemDisplayInfo.dbc.
-        inventory_type: Equipment slot type (see InventoryType table).
-        material: Material for sound effects (1=Metal, 2=Wood, etc.).
-        sound_override: Sound override subclass (-1 = use subclass_id).
-        sheathe_type: Sheathe position for weapons.
-
-    Returns:
-        int: The item_id that was injected.
-    """
-    import os
-    filepath = os.path.join(dbc_dir, 'Item.dbc')
-    dbc = DBCInjector(filepath)
-
-    # Item.dbc WotLK layout: 8 fields, 32 bytes per record
-    # All fields are uint32 except Sound_override_subclassID which is int32
-    record = struct.pack(
-        '<IIIiIIII',  # Note: field 3 is signed int32
-        item_id,              # 0: ID
-        class_id,             # 1: ClassID
-        subclass_id,          # 2: SubclassID
-        sound_override,       # 3: Sound_override_subclassID (-1 = default)
-        material,             # 4: Material
-        display_info_id,      # 5: DisplayInfoID
-        inventory_type,       # 6: InventoryType
-        sheathe_type,         # 7: SheatheType
-    )
-
-    assert len(record) == 32, (
-        "Item.dbc record size mismatch: expected 32, got {}".format(len(record))
-    )
-
-    dbc.records.append(record)
-    dbc.write(filepath)
-
-    return item_id
-
-
-# Example: Register a one-handed sword
-create_item_dbc_entry(
-    dbc_dir='C:/wow335/DBFilesClient',
-    item_id=90001,
-    class_id=2,           # Weapon
-    subclass_id=7,        # Sword (one-handed)
-    display_info_id=80001,  # Our custom ItemDisplayInfo entry
-    inventory_type=13,    # INVTYPE_WEAPON (one-hand)
-    material=1,           # Metal
-    sound_override=-1,    # Use default sword sounds
-    sheathe_type=3,       # Left hip sheathe
+# Item.dbc WotLK layout: 8 fields, 32 bytes per record
+# All fields are uint32 except Sound_override_subclassID which is int32
+record = struct.pack(
+    '<IIIiIIII',
+    90001,         # 0: ID
+    2,             # 1: ClassID (Weapon)
+    7,             # 2: SubclassID (Sword 1H)
+    -1,            # 3: Sound_override_subclassID
+    1,             # 4: Material (Metal)
+    80001,         # 5: DisplayInfoID
+    13,            # 6: InventoryType (INVTYPE_WEAPON)
+    3,             # 7: SheatheType (left hip)
 )
+
+dbc.records.append(record)
+dbc.write(filepath)
 ```
 
 ### Item Class Reference
@@ -791,7 +806,7 @@ Complete example: Create a custom epic 2H mace for WoW WotLK 3.3.5a.
 
 This script:
 1. Injects an ItemDisplayInfo.dbc entry for the visual appearance
-2. Injects an Item.dbc entry linking to the display info
+2. Registers an Item.dbc entry via register_item()
 3. Generates item_template SQL for server-side stats
 
 Prerequisites:
@@ -800,6 +815,7 @@ Prerequisites:
 """
 import struct
 import os
+from world_builder import register_item
 from world_builder.dbc_injector import DBCInjector
 from world_builder.sql_generator import SQLGenerator
 
@@ -813,6 +829,10 @@ DISPLAY_ID = 80010
 # ----------------------------------------------------------------
 # Step 1: Create ItemDisplayInfo.dbc entry
 # ----------------------------------------------------------------
+# ItemDisplayInfo.dbc still requires low-level DBCInjector for custom
+# display entries. If you can reuse an existing display ID (e.g. from
+# a Blizzard item), skip this step entirely and pass that ID to
+# register_item() below.
 idi_path = os.path.join(DBC_DIR, 'ItemDisplayInfo.dbc')
 idi_dbc = DBCInjector(idi_path)
 
@@ -847,27 +867,19 @@ idi_dbc.write(idi_path)
 print("[OK] ItemDisplayInfo.dbc: added entry {}".format(DISPLAY_ID))
 
 # ----------------------------------------------------------------
-# Step 2: Create Item.dbc entry
+# Step 2: Create Item.dbc entry via register_item()
 # ----------------------------------------------------------------
-item_path = os.path.join(DBC_DIR, 'Item.dbc')
-item_dbc = DBCInjector(item_path)
-
-item_record = struct.pack(
-    '<IIIiIIII',
-    ITEM_ID,          # ID
-    2,                # ClassID = Weapon
-    5,                # SubclassID = 2H Mace
-    -1,               # Sound_override_subclassID
-    1,                # Material = Metal
-    DISPLAY_ID,       # DisplayInfoID
-    17,               # InventoryType = INVTYPE_2HWEAPON
-    1,                # SheatheType = TwoHandLeft (back)
+registered_id = register_item(
+    dbc_dir=DBC_DIR,
+    item_id=ITEM_ID,
+    class_id=2,               # Weapon
+    subclass_id=5,            # 2H Mace
+    material=1,               # Metal
+    display_info_id=DISPLAY_ID,
+    inventory_type=17,        # INVTYPE_2HWEAPON
+    sheathe_type=1,           # TwoHandLeft (back)
 )
-
-assert len(item_record) == 32
-item_dbc.records.append(item_record)
-item_dbc.write(item_path)
-print("[OK] Item.dbc: added entry {}".format(ITEM_ID))
+print("[OK] Item.dbc: added entry {}".format(registered_id))
 
 # ----------------------------------------------------------------
 # Step 3: Generate item_template SQL
@@ -1043,6 +1055,7 @@ print("  5. Restart worldserver and clear client cache")
 - **[Modify Loot Tables](modify_loot_tables.md)** -- Make your custom item drop from creatures or chests
 - **[Custom Crafting Recipe](custom_crafting_recipe.md)** -- Create a profession recipe that crafts your custom item
 - **pywowlib API Reference:**
-  - `world_builder.dbc_injector.DBCInjector` -- Low-level DBC read/write
+  - `world_builder.dbc_injector.register_item()` -- Convenience wrapper for Item.dbc record creation (auto-ID, 8 fields / 32 bytes)
+  - `world_builder.dbc_injector.DBCInjector` -- Low-level DBC read/write (needed for ItemDisplayInfo.dbc custom display entries)
   - `world_builder.sql_generator.SQLGenerator.add_items()` -- Item SQL generation
   - `world_builder.sql_generator.ItemBuilder.add_item()` -- Single item builder

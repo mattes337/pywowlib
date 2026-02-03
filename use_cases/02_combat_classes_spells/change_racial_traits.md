@@ -3,7 +3,7 @@
 **Complexity**: Intermediate |
 **DBC Files**: Spell.dbc, SkillLineAbility.dbc, ChrRaces.dbc |
 **SQL Tables**: player_levelstats, playercreateinfo_spell_custom |
-**pywowlib Modules**: `world_builder.dbc_injector.DBCInjector`
+**pywowlib Modules**: `world_builder.dbc_injector.DBCInjector`, `world_builder.dbc_injector.register_spell`, `world_builder.dbc_injector.modify_spell`, `world_builder.dbc_injector.register_skill_line_ability`
 
 ---
 
@@ -17,6 +17,68 @@ Every playable race in WoW 3.3.5a has a set of racial traits -- passive abilitie
 4. **Server-side SQL** - `player_levelstats` for base stat adjustments, `playercreateinfo_spell_custom` for spells granted at creation
 
 This guide covers reading existing racial trait data, modifying passive racial bonuses (like stat increases), changing active racial abilities, adding entirely new racial traits via SkillLineAbility auto-learning, and adjusting base stats through the server database.
+
+---
+
+## Quick Start: Convenience API
+
+pywowlib provides `register_spell()`, `modify_spell()`, and `register_skill_line_ability()` for creating and modifying racial traits without manual binary construction:
+
+```python
+from world_builder import register_spell, modify_spell, register_skill_line_ability
+
+DBC_DIR = "C:/Games/WoW335/Data/DBFilesClient"
+
+# --- Create a new racial passive spell ---
+spell_id = register_spell(
+    dbc_dir=DBC_DIR,
+    name="Enhanced Endurance",
+    spell_id=90500,
+    school_mask=0x01,               # Physical
+    attributes=0x00000040,          # PASSIVE
+    duration_index=21,              # infinite
+    cast_time_index=1,              # instant
+    range_index=0,                  # self
+    effect_1=6,                     # APPLY_AURA
+    effect_1_aura=142,              # MOD_BASE_RESISTANCE_PCT
+    effect_1_base_points=4,         # displays as 5%
+    effect_1_target_a=1,            # SELF
+    effect_1_misc_value=1,          # physical armor
+    spell_icon_id=2588,
+    description="Increases armor from items by $s1%.",
+    aura_description="Armor from items increased by $s1%.",
+)
+
+# --- Link the spell to the Dwarf racial skill line for auto-learn ---
+register_skill_line_ability(
+    dbc_dir=DBC_DIR,
+    skill_line=101,                 # Dwarf racial skill line
+    spell_id=spell_id,
+    race_mask=0x004,                # Dwarf only
+    acquire_method=1,               # learned when skill is learned
+)
+
+# --- Modify an existing racial passive (e.g. buff Gnome Expansive Mind) ---
+modify_spell(DBC_DIR, spell_id=20591, EffectBasePoints0=9)  # 10% instead of 5%
+```
+
+`register_skill_line_ability()` parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `dbc_dir` | (required) | Path to directory containing SkillLineAbility.dbc |
+| `skill_line` | (required) | SkillLine.dbc ID (e.g. 101=Dwarf, 754=Human) |
+| `spell_id` | (required) | Spell.dbc ID to associate |
+| `ability_id` | `None` | Specific row ID or `None` for auto |
+| `race_mask` | `0` | Allowed race bitmask (0 = all) |
+| `class_mask` | `0` | Allowed class bitmask (0 = all) |
+| `min_skill_rank` | `0` | Minimum skill rank to learn |
+| `superceded_by` | `0` | Spell ID that replaces at higher rank |
+| `acquire_method` | `1` | 1=learned on skill, 2=learned at trainer |
+| `trivial_high` | `0` | Skill rank where this goes grey |
+| `trivial_low` | `0` | Minimum skill rank threshold |
+
+The manual approaches documented below are still valuable for understanding the binary layout, for bulk operations, and for read/inspect workflows.
 
 ---
 
@@ -219,6 +281,16 @@ for ability in list_racial_abilities(DBC_DIR, 'Human'):
 
 ## Step 4: Modify an Existing Racial Passive in Spell.dbc
 
+> **Recommended**: Use `modify_spell()` for simple value changes:
+> ```python
+> from world_builder import modify_spell
+> # Buff Gnome Expansive Mind from 5% to 10% Intellect
+> modify_spell(DBC_DIR, spell_id=20591, EffectBasePoints0=9)
+> # Buff Human Spirit from 3% to 5% Spirit
+> modify_spell(DBC_DIR, spell_id=20598, EffectBasePoints0=4)
+> ```
+> The manual approach below is kept for reference and for more complex modifications.
+
 Most racial passives are `APPLY_AURA` spells with effect types like:
 - `SPELL_AURA_MOD_BASE_RESISTANCE_PCT` (Stoneform armor bonus)
 - `SPELL_AURA_MOD_SKILL` (Expansive Mind intellect bonus)
@@ -291,9 +363,11 @@ def modify_racial_passive_value(dbc_dir, spell_id, new_value, effect_slot=0):
 ## Step 5: Add a New Racial Trait
 
 Adding a new racial trait requires three steps:
-1. Create the spell in Spell.dbc (see [Add New Spell](./add_new_spell.md))
-2. Add a SkillLineAbility entry to link it to the racial skill line
+1. Create the spell in Spell.dbc (use `register_spell()` -- see [Add New Spell](./add_new_spell.md))
+2. Add a SkillLineAbility entry to link it to the racial skill line (use `register_skill_line_ability()`)
 3. Optionally update server-side tables
+
+> **Recommended**: Use the convenience API shown in the Quick Start section above. The manual approach below is kept for reference.
 
 ```python
 def build_skill_line_ability_record(sla_id, skill_line, spell_id,
@@ -572,7 +646,54 @@ You generally do not need to modify ChrRaces.dbc for racial trait changes. It is
 
 ## Step 11: Complete Working Example
 
-This complete example adds a custom passive racial trait to Dwarves that increases their armor by 5%:
+### Using the Convenience API (Recommended)
+
+```python
+"""
+Complete example: Add "Stoneblood" passive racial to Dwarves.
+Increases armor by 5% for all Dwarf characters.
+Uses register_spell() and register_skill_line_ability().
+"""
+from world_builder import register_spell, register_skill_line_ability
+
+DBC_DIR = "C:/Games/WoW335/Data/DBFilesClient"
+STONEBLOOD_SPELL_ID = 90500
+
+# --- Step 1: Create the passive spell in Spell.dbc ---
+register_spell(
+    dbc_dir=DBC_DIR,
+    name="Stoneblood",
+    spell_id=STONEBLOOD_SPELL_ID,
+    school_mask=0x01,                   # Physical
+    attributes=0x00000040,              # PASSIVE
+    cast_time_index=1,                  # instant
+    duration_index=21,                  # infinite
+    range_index=0,                      # self
+    effect_1=6,                         # APPLY_AURA
+    effect_1_aura=142,                  # MOD_BASE_RESISTANCE_PCT
+    effect_1_base_points=4,             # displays as 5%
+    effect_1_target_a=1,                # SELF
+    effect_1_misc_value=1,              # physical armor
+    spell_icon_id=2588,                 # stone shield icon
+    description="Increases armor from items by $s1%.",
+    aura_description="Armor from items increased by $s1%.",
+)
+print("Added Stoneblood spell (ID {})".format(STONEBLOOD_SPELL_ID))
+
+# --- Step 2: Link to Dwarf racial skill line for auto-learn ---
+register_skill_line_ability(
+    dbc_dir=DBC_DIR,
+    skill_line=101,                     # Dwarf racial skill line
+    spell_id=STONEBLOOD_SPELL_ID,
+    race_mask=0x004,                    # Dwarf
+    acquire_method=1,                   # learned when skill is learned
+)
+print("Linked to Dwarf racial skill line")
+```
+
+### Manual Approach (Full Control)
+
+The following example uses lower-level binary construction for complete field-level control:
 
 ```python
 """

@@ -3,7 +3,7 @@
 **Complexity**: Intermediate |
 **DBC Files**: Spell.dbc |
 **SQL Tables**: spell_dbc, spell_bonus_data, spell_custom_attr |
-**pywowlib Modules**: `world_builder.dbc_injector.DBCInjector`
+**pywowlib Modules**: `world_builder.dbc_injector.DBCInjector`, `world_builder.dbc_injector.modify_spell`
 
 ---
 
@@ -12,6 +12,41 @@
 Modifying existing spells is significantly simpler than creating new ones because the record already exists in both the client DBC and the server database. The task reduces to: read the existing record, patch specific fields at their byte offsets, and write the file back.
 
 This guide covers the most common spell modifications: adjusting damage values, changing mana costs, modifying cast times and cooldowns, altering range, tweaking spell power coefficients, and updating tooltip text. All changes require coordinated edits on both client (Spell.dbc) and server (SQL tables) to keep tooltips and mechanics in sync.
+
+---
+
+## Quick Start: Convenience API
+
+pywowlib provides `modify_spell()` which lets you change any Spell.dbc field by name in a single call, without manual byte-offset calculations:
+
+```python
+from world_builder import modify_spell
+
+DBC_DIR = "C:/Games/WoW335/Data/DBFilesClient"
+
+# Buff Fireball: reduce mana cost and cooldown
+modify_spell(DBC_DIR, spell_id=133, ManaCost=200, RecoveryTime=5000)
+
+# Change Frostbolt damage: set BasePoints to 99 (displays 100), DieSides to 51 (100-150)
+modify_spell(DBC_DIR, spell_id=116,
+             EffectBasePoints0=99,
+             EffectDieSides0=51)
+
+# Change tooltip text (locstring fields accept plain strings)
+modify_spell(DBC_DIR, spell_id=5143,
+             Name_lang="Arcane Storm",
+             Description_lang="Launches a barrage of arcane energy, "
+                              "hitting the target every second for $d.")
+
+# Change a float field (spell power coefficient)
+modify_spell(DBC_DIR, spell_id=116, EffectBonusCoefficient0=0.9)
+```
+
+`modify_spell()` accepts the spell ID and any number of keyword arguments. Each keyword must be a valid field name from the `_SPELL_FIELD_MAP` (the same field names listed in the byte offset table in Step 1 below). Locstring fields (`Name_lang`, `Description_lang`, `NameSubtext_lang`, `AuraDescription_lang`) accept plain strings. Float fields (`Speed`, `EffectBonusCoefficient0`, etc.) are handled automatically.
+
+The function raises `ValueError` if the spell ID is not found or if a field name is unrecognized.
+
+The manual byte-offset approach documented below remains available for advanced use and for understanding the binary layout.
 
 ---
 
@@ -170,6 +205,8 @@ else:
 
 ## Step 3: Modify Specific Fields
 
+> **Note**: For most modifications, `modify_spell()` from the Quick Start section above replaces this entire manual workflow. The approach below is kept for reference and for advanced scenarios.
+
 The `DBCInjector` stores records as raw bytes. To modify a field, convert the record to a mutable `bytearray`, patch the bytes with `struct.pack_into`, and store it back.
 
 ```python
@@ -207,6 +244,13 @@ def modify_spell_string(dbc, record_index, field_index, new_text):
 ---
 
 ## Step 4: Common Modifications with Complete Examples
+
+> **Tip**: All of the modifications below can also be done with a single `modify_spell()` call using the appropriate `_SPELL_FIELD_MAP` field names. For example, instead of the `change_spell_damage()` function, you can write:
+> ```python
+> from world_builder import modify_spell
+> # Change Fireball rank 1 damage to 100-150
+> modify_spell(DBC_DIR, 133, EffectBasePoints0=99, EffectDieSides0=51)
+> ```
 
 ### 4.1 - Change Damage Values
 
@@ -459,7 +503,19 @@ change_spell_description(
 
 ## Step 5: Batch Modification
 
-For modifying multiple spells at once (e.g., rebalancing an entire spell school), load the DBC once, make all changes, and write once:
+For simple batch changes, you can call `modify_spell()` in a loop:
+
+```python
+from world_builder import modify_spell
+
+DBC_DIR = "C:/Games/WoW335/Data/DBFilesClient"
+
+# Rebalance frost spell mana costs
+for spell_id, new_cost in [(116, 20), (205, 35), (120, 50)]:
+    modify_spell(DBC_DIR, spell_id, ManaCost=new_cost)
+```
+
+Note that each `modify_spell()` call opens and writes the DBC file separately. For large batch operations where performance matters, the manual single-load approach below is more efficient -- it loads the DBC once, patches all records in memory, and writes once:
 
 ```python
 def batch_modify_spells(dbc_dir, modifications):

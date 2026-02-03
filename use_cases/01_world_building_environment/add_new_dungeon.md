@@ -20,6 +20,8 @@ By the end of this guide you will have:
 - Eluna Lua boss encounter scripts via **ScriptGenerator**
 - Server-side SQL for `instance_template`, `access_requirement`,
   `areatrigger_teleport`, and `lfg_dungeon_template`
+- Server collision (vmap) and pathfinding (mmap) data via the
+  **vmap_generator** Python wrappers
 - Everything packed into the correct MPQ directory structure
 
 ---
@@ -736,7 +738,66 @@ print("Packed to:", output)
 
 ---
 
-### Step 9 -- Reading Existing Dungeons
+### Step 9 -- Collision and Pathing (vmap/mmap)
+
+The server needs collision (vmap) and pathfinding (mmap) data for dungeon
+instances, just like exterior zones. The `vmap_generator` module provides Python
+wrappers around the TrinityCore/CMaNGOS server tools.
+
+> **Tool prerequisite**: The underlying executables (`vmap4extractor`,
+> `vmap4assembler`, `mmaps_generator`) must be available on your system PATH or
+> in a directory you specify via `tools_dir`. You can build them from source or
+> use the Docker image at `tools/extractors/Dockerfile` in the pywowlib repo.
+> If the tools are not found, all functions log a warning and return `None`
+> gracefully without failing the build pipeline.
+
+#### Generate All Server Data (Recommended)
+
+```python
+from world_builder.vmap_generator import generate_server_data
+
+# Generate vmaps + mmaps for the dungeon map
+result = generate_server_data(
+    wow_data_dir=r"C:\WoW335\Data",   # Path to WoW Data/ directory (with MPQs)
+    output_dir=r"C:\server\data",
+    map_name=DUNGEON_NAME,             # Optional: extract only this map (None=all)
+    map_id=MAP_ID,                     # Optional: generate mmaps for this map only
+    tools_dir=None,                    # Optional: directory containing the tools
+)
+
+print("vmaps:", result['vmaps_dir'])   # Path to vmaps/ or None if tools missing
+print("mmaps:", result['mmaps_dir'])   # Path to mmaps/ or None if tools missing
+```
+
+#### Generate Individually
+
+```python
+from world_builder.vmap_generator import generate_vmaps, generate_mmaps
+
+# Step 1: Extract and assemble vmaps
+vmaps_dir = generate_vmaps(
+    wow_data_dir=r"C:\WoW335\Data",
+    output_dir=r"C:\server\data",
+    map_name=DUNGEON_NAME,
+    tools_dir=None,
+)
+
+# Step 2: Generate mmaps (requires vmaps from step 1)
+if vmaps_dir:
+    mmaps_dir = generate_mmaps(
+        vmaps_dir=vmaps_dir,
+        output_dir=r"C:\server\data",
+        map_id=MAP_ID,
+        tools_dir=None,
+    )
+```
+
+> **Note**: Dungeon WMO files generally produce small vmap/mmap data sets. The
+> extraction is fast compared to full continent maps.
+
+---
+
+### Step 10 -- Reading Existing Dungeons
 
 To inspect or modify an existing WMO dungeon:
 

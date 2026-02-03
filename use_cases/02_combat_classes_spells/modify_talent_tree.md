@@ -3,7 +3,7 @@
 **Complexity**: Advanced |
 **DBC Files**: Talent.dbc, TalentTab.dbc, Spell.dbc |
 **SQL Tables**: (none for pure talent changes) |
-**pywowlib Modules**: `world_builder.dbc_injector.DBCInjector`
+**pywowlib Modules**: `world_builder.dbc_injector.DBCInjector`, `world_builder.dbc_injector.register_talent`, `world_builder.dbc_injector.register_talent_tab`, `world_builder.dbc_injector.register_spell`
 
 ---
 
@@ -14,6 +14,111 @@ WotLK 3.3.5a talent trees are defined entirely in two client DBC files: `Talent.
 Unlike most other modding tasks, talent tree changes are purely DBC-driven. There are no SQL tables involved. However, talent modifications are fragile: incorrect tier/column placement, broken prerequisite chains, or missing spell references will cause the talent UI to display incorrectly, show blank slots, or crash the client entirely.
 
 This guide covers: reading and understanding both DBC layouts, adding new talent entries, reorganizing existing talents, creating prerequisite chains (the arrow dependencies in the UI), changing which spells a talent grants, and the common pitfalls that break the talent panel.
+
+---
+
+## Quick Start: Convenience API
+
+pywowlib provides `register_talent()` and `register_talent_tab()` for creating talent entries without manual binary construction:
+
+```python
+from world_builder import register_talent, register_talent_tab, register_spell
+
+DBC_DIR = "C:/Games/WoW335/Data/DBFilesClient"
+
+# --- Create the talent rank spells first ---
+rank1_id = register_spell(
+    dbc_dir=DBC_DIR,
+    name="Arcane Precision",
+    name_subtext="Rank 1",
+    description="Increases your Arcane spell critical strike chance by 1%.",
+    spell_id=90300,
+    school_mask=0x01,
+    attributes=0x00000040,      # PASSIVE
+    duration_index=21,          # infinite
+    effect_1=6,                 # APPLY_AURA
+    effect_1_aura=57,           # MOD_SPELL_CRIT_CHANCE
+    effect_1_base_points=0,     # displays as 1%
+    effect_1_target_a=1,        # SELF
+    effect_1_misc_value=64,     # Arcane school
+)
+rank2_id = register_spell(
+    dbc_dir=DBC_DIR,
+    name="Arcane Precision",
+    name_subtext="Rank 2",
+    description="Increases your Arcane spell critical strike chance by 2%.",
+    spell_id=90301,
+    school_mask=0x01,
+    attributes=0x00000040,
+    duration_index=21,
+    effect_1=6, effect_1_aura=57, effect_1_base_points=1,
+    effect_1_target_a=1, effect_1_misc_value=64,
+)
+rank3_id = register_spell(
+    dbc_dir=DBC_DIR,
+    name="Arcane Precision",
+    name_subtext="Rank 3",
+    description="Increases your Arcane spell critical strike chance by 3%.",
+    spell_id=90302,
+    school_mask=0x01,
+    attributes=0x00000040,
+    duration_index=21,
+    effect_1=6, effect_1_aura=57, effect_1_base_points=2,
+    effect_1_target_a=1, effect_1_misc_value=64,
+)
+
+# --- Create the talent entry ---
+talent_id = register_talent(
+    dbc_dir=DBC_DIR,
+    tab_id=81,                  # Mage Arcane
+    tier=4,                     # 5th row (requires 20 points)
+    column=0,                   # leftmost column
+    spell_ranks=[rank1_id, rank2_id, rank3_id],
+    # talent_id=None           -- auto-assigns next available ID
+    # prereq_talents=[(other_talent_id, 3)]  -- optional prerequisites
+)
+print("Created talent:", talent_id)
+
+# --- Create a new talent tab (for custom class trees) ---
+tab_id = register_talent_tab(
+    dbc_dir=DBC_DIR,
+    name="Gladiator",
+    class_mask=0x001,           # Warrior
+    order_index=0,              # first tab
+    spell_icon_id=132,
+    background_file="Interface\\TalentFrame\\WarriorArms-TopLeft",
+    # tab_id=None              -- auto-assigns next available ID
+)
+print("Created talent tab:", tab_id)
+```
+
+`register_talent()` parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `dbc_dir` | (required) | Path to directory containing Talent.dbc |
+| `tab_id` | (required) | FK to TalentTab.dbc |
+| `tier` | (required) | Row in talent tree (0-10) |
+| `column` | (required) | Column in talent tree (0-3) |
+| `spell_ranks` | (required) | List of up to 9 spell IDs (one per rank) |
+| `talent_id` | `None` | Specific ID or `None` for auto |
+| `prereq_talents` | `None` | List of `(talent_id, required_rank)` tuples (up to 3) |
+| `required_spell_id` | `0` | Spell the player must already know (0 = none) |
+
+`register_talent_tab()` parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `dbc_dir` | (required) | Path to directory containing TalentTab.dbc |
+| `name` | (required) | Tab display name (e.g. "Fire") |
+| `class_mask` | (required) | Class bitmask |
+| `tab_id` | `None` | Specific ID or `None` for auto |
+| `spell_icon_id` | `1` | FK to SpellIcon.dbc |
+| `order_index` | `0` | Display order (0, 1, or 2) |
+| `background_file` | `None` | Background texture path |
+| `race_mask` | `0` | Allowed race bitmask (0 = all) |
+
+The manual approach documented below is still valuable for understanding the binary layout and for bulk operations where you want to load the DBC once.
 
 ---
 
@@ -272,6 +377,8 @@ for t in list_talents_for_tab(DBC_DIR, 61):
 ---
 
 ## Step 4: Add a New Talent Entry
+
+> **Note**: For most use cases, `register_talent()` from the Quick Start section above handles this automatically. The manual approach below is provided for reference.
 
 ```python
 def pack_locstring(string_offset):
@@ -545,6 +652,8 @@ modify_talent(
 
 ## Step 7: Create or Modify a TalentTab
 
+> **Note**: For creating new tabs, `register_talent_tab()` from the Quick Start section above is the recommended approach. The manual construction below is provided for reference.
+
 ```python
 def build_talent_tab_record(dbc, tab_id, name, class_mask,
                             order_index, background_path,
@@ -641,7 +750,42 @@ def add_talent_tab(dbc_dir, name, class_mask, order_index,
 
 ## Step 8: Complete Example - Add a Mini Talent Chain
 
-This example adds two new talents to the Mage Arcane tree (TabID 81) with a prerequisite arrow between them:
+### Using the Convenience API (Recommended)
+
+```python
+from world_builder import register_talent
+
+DBC_DIR = "C:/Games/WoW335/Data/DBFilesClient"
+
+# Assume custom spells 90300-90303 already exist in Spell.dbc
+# (see add_new_spell.md or the Quick Start section above)
+
+# Talent 1: "Arcane Precision" (3/3), Tier 4, Column 0
+arcane_precision_id = register_talent(
+    dbc_dir=DBC_DIR,
+    tab_id=81,                              # Mage Arcane
+    tier=4,                                 # 5th row (requires 20 points)
+    column=0,                               # leftmost
+    spell_ranks=[90300, 90301, 90302],      # 3 ranks
+)
+
+# Talent 2: "Arcane Dominion" (1/1), Tier 6, Column 0
+# Requires 3/3 in Arcane Precision (draws an arrow in the UI)
+arcane_dominion_id = register_talent(
+    dbc_dir=DBC_DIR,
+    tab_id=81,
+    tier=6,                                 # 7th row (requires 30 points)
+    column=0,
+    spell_ranks=[90303],                    # 1 rank
+    prereq_talents=[(arcane_precision_id, 3)],  # requires 3/3
+)
+
+print("Chain: {} -> {}".format(arcane_precision_id, arcane_dominion_id))
+```
+
+### Manual Approach (Full Control)
+
+This example uses the lower-level `build_talent_record` for direct binary construction:
 
 ```python
 import struct

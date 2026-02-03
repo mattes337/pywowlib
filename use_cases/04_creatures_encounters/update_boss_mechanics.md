@@ -15,7 +15,7 @@ The pywowlib toolkit offers two complementary scripting approaches:
 1. **ScriptGenerator + Eluna Lua** (recommended for complex bosses): Generates complete, deployable Lua scripts from structured Python data definitions. Supports multi-phase encounters, timer-based abilities, target selection logic, add spawning, void zones, phase transitions, boss yells, and achievement tracking.
 2. **SQLGenerator + SmartAI** (simpler encounters): SQL-only scripting using the `smart_scripts` table. Best for trash mobs, mini-bosses, and encounters with fewer than 5 abilities.
 
-Both approaches use the `SpellRegistry` to manage spell ID assignments.
+Both approaches use the `SpellRegistry` to manage spell ID assignments. For custom boss spells that require client-side Spell.dbc entries, the `register_spell()` convenience function handles all 234-field byte packing automatically.
 
 ---
 
@@ -136,14 +136,115 @@ SPELL_VOID_ERUPTION = 90105                   -- Custom: Void Eruption
 
 ## Step 2: Client-Side -- Register Custom Boss Spells in Spell.dbc
 
-Custom spells (IDs in the 90000+ range) do not exist in the base game. For the server to recognize them, you need `spell_dbc` entries in the AzerothCore database. For the client to show spell visuals, you may need client-side `Spell.dbc` modifications.
+Custom spells (IDs in the 90000+ range) do not exist in the base game. For the server to recognize them, you need `spell_dbc` entries in the AzerothCore database. For the client to show spell tooltips, cast bar names, or spell icons, you also need client-side `Spell.dbc` entries.
 
-### 2.1 Server-Side: spell_dbc Table
+The `register_spell()` convenience function handles the full 234-field Spell.dbc record automatically, exposing only the commonly used parameters as named arguments.
 
-AzerothCore provides a `spell_dbc` table that acts as an override/addition to the client's `Spell.dbc`. For server-only mechanics (damage, effects), this is sufficient:
+### 2.1 Registering Custom Boss Spells with `register_spell()`
+
+```python
+from world_builder import register_spell, register_spell_icon
+
+# Create a custom physical cleave ability
+cleave_id = register_spell(
+    dbc_dir='./output/dbc/',
+    name='Dragon Cleave',
+    school_mask=0x01,               # Physical
+    cast_time_index=1,              # 1 = instant cast
+    range_index=0,                  # 0 = self/melee range
+    cooldown=8000,                  # 8 second cooldown (ms)
+    gcd=1500,                       # 1.5s global cooldown (ms)
+    effect_1=2,                     # SPELL_EFFECT_SCHOOL_DAMAGE
+    effect_1_base_points=5000,      # Base damage
+    effect_1_target_a=1,            # TARGET_UNIT_CASTER
+    description='Cleaves nearby enemies for heavy physical damage.',
+    # spell_id=None,                # Auto-assigns next available ID
+)
+print(f"Dragon Cleave spell ID: {cleave_id}")
+
+# Create a fire breath DoT ability
+fire_breath_id = register_spell(
+    dbc_dir='./output/dbc/',
+    name='Fire Breath',
+    school_mask=0x04,               # Fire
+    cast_time_index=1,              # Instant
+    duration_index=21,              # 12 seconds duration
+    range_index=6,                  # 30 yard range
+    cooldown=15000,                 # 15 second cooldown
+    effect_1=6,                     # SPELL_EFFECT_APPLY_AURA
+    effect_1_aura=3,                # SPELL_AURA_PERIODIC_DAMAGE
+    effect_1_base_points=1500,      # Tick damage
+    effect_1_target_a=6,            # TARGET_UNIT_TARGET_ENEMY
+    spell_visual_id=0,              # 0 = no client visual (use existing spell visual instead)
+    description='Scorches the target with dragonfire, dealing periodic damage.',
+)
+print(f"Fire Breath spell ID: {fire_breath_id}")
+
+# Optionally register a custom spell icon
+icon_id = register_spell_icon(
+    dbc_dir='./output/dbc/',
+    texture_path='Interface\\Icons\\Ability_Creature_Fire_01',
+)
+# Then reference icon_id as spell_icon_id when registering the spell
+```
+
+**`register_spell()` key parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `dbc_dir` | str | required | Path to directory containing Spell.dbc |
+| `name` | str | required | Spell display name (enUS) |
+| `spell_id` | int/None | None | Specific ID, or None for auto (max_id + 1) |
+| `school_mask` | int | 0x01 | Damage school (0x01=Physical, 0x02=Holy, 0x04=Fire, 0x08=Nature, 0x10=Frost, 0x20=Shadow, 0x40=Arcane) |
+| `cast_time_index` | int | 1 | FK to SpellCastTimes.dbc (1 = instant) |
+| `duration_index` | int | 0 | FK to SpellDuration.dbc (0 = no duration) |
+| `range_index` | int | 0 | FK to SpellRange.dbc (0 = self) |
+| `power_type` | int | 0 | 0=mana, 1=rage, 2=focus, 3=energy, 6=runic power |
+| `mana_cost` | int | 0 | Base resource cost |
+| `cooldown` | int | 0 | Spell-specific cooldown (ms) |
+| `gcd` | int | 1500 | Global cooldown (ms) |
+| `effect_1..3` | int | 0 | Effect type for each of the 3 effect slots |
+| `effect_1..3_base_points` | int | 0 | Base value for each effect |
+| `effect_1..3_aura` | int | 0 | Aura type for each effect slot |
+| `effect_1..3_target_a/b` | int | 0 | Implicit targeting for each effect |
+| `effect_1..3_radius_index` | int | 0 | FK to SpellRadius.dbc for AoE effects |
+| `effect_1..3_trigger_spell` | int | 0 | Triggered spell for each effect |
+| `effect_1..3_misc_value` | int | 0 | Miscellaneous value per effect |
+| `spell_icon_id` | int | 1 | FK to SpellIcon.dbc |
+| `spell_visual_id` | int | 0 | FK to SpellVisual.dbc (0 = none) |
+| `name_subtext` | str/None | None | Spell rank/subtext |
+| `description` | str/None | None | Tooltip description |
+| `aura_description` | str/None | None | Aura tooltip text |
+| `attributes` | int | 0 | Spell attributes bitmask |
+| `attributes_ex` | int | 0 | Extended attributes bitmask |
+| `category` | int | 0 | Spell category ID |
+| `mechanic` | int | 0 | Spell mechanic type |
+| `**kwargs` | | | Additional Spell.dbc field overrides by internal field name |
+
+### 2.2 Modifying Existing Boss Spells with `modify_spell()`
+
+If you want to tweak an existing WoW spell (change its damage, cooldown, etc.) rather than creating a new one, use `modify_spell()`:
+
+```python
+from world_builder import modify_spell
+
+# Increase the base damage of an existing spell
+modify_spell(
+    dbc_dir='./output/dbc/',
+    spell_id=27831,                 # Shadow Bolt Volley
+    EffectBasePoints0=6000,         # Increase base damage for effect slot 1
+    RecoveryTime=5000,              # Reduce cooldown to 5 seconds
+)
+```
+
+`modify_spell()` accepts the spell ID and any number of field overrides as keyword arguments using internal Spell.dbc field names. It raises `ValueError` if the spell ID is not found or a field name is unknown.
+
+### 2.3 Server-Side: spell_dbc Table
+
+AzerothCore also provides a `spell_dbc` table that acts as a server-side override to the client's `Spell.dbc`. For server-only mechanics where you do not need the client to display custom tooltips, this SQL approach is sufficient:
 
 ```sql
--- Register a custom boss spell (server-side only)
+-- Register a custom boss spell (server-side only, no client tooltip)
 INSERT INTO `spell_dbc` (
     `Id`, `Category`, `Dispel`, `Mechanic`, `Attributes`,
     `CastingTimeIndex`, `DurationIndex`, `RangeIndex`,
@@ -158,13 +259,9 @@ INSERT INTO `spell_dbc` (
  6, 6, 4500);               -- Effect: SCHOOL_DAMAGE, target: CHAIN, base damage
 ```
 
-### 2.2 Client-Side: Spell.dbc (Optional)
+### 2.4 Practical Approach: Reuse Existing Spells
 
-If you want players to see spell tooltips, cast bar names, or spell icons for custom spells, you must also inject entries into the client `Spell.dbc`. This is a large, complex DBC (over 200 fields per record). For most boss encounters, server-side `spell_dbc` entries are sufficient because the boss is casting -- the player only sees the visual effect, which you can borrow from an existing spell via `VisualEffect` fields.
-
-### 2.3 Practical Approach: Reuse Existing Spells
-
-The simplest approach is to reuse existing WoW spells for visual effects and override damage/behavior server-side:
+The simplest approach for boss visuals is to reuse existing WoW spells and override damage/behavior in the encounter script:
 
 ```python
 # Reuse an existing Chain Lightning visual for our custom ability
@@ -175,7 +272,9 @@ registry.register_spell(
 )
 ```
 
-Then override the damage server-side with `spell_dbc` or handle it entirely in the Lua script.
+Then override the damage server-side with `spell_dbc`, `modify_spell()`, or handle it entirely in the Lua script.
+
+When you need full client-side support (custom tooltips, cast bar text, spell icons), use `register_spell()` to inject a complete Spell.dbc entry.
 
 ---
 
@@ -1062,15 +1161,79 @@ This example creates a complete two-phase boss encounter with all mechanics, usi
 ```python
 """
 Complete example: Two-phase boss encounter with ScriptGenerator.
-Generates Eluna Lua scripts, spell constants, and creature SQL.
+Generates Eluna Lua scripts, spell constants, creature SQL,
+and client-side Spell.dbc entries for custom boss abilities.
 """
 
+from world_builder import register_spell, register_spell_icon
 from world_builder.sql_generator import SQLGenerator
 from world_builder.script_generator import ScriptGenerator
 from world_builder.spell_registry import SpellRegistry
 
 # ---------------------------------------------------------------
-# 1. Set up spell registry
+# 1. Register custom spells in client-side Spell.dbc
+# ---------------------------------------------------------------
+# Custom spells need Spell.dbc entries so the client shows
+# cast bars, tooltips, and spell names. Existing spells (like
+# Shadow Bolt Volley 27831) are already in the client and do
+# not need registration.
+
+summon_wisps_id = register_spell(
+    dbc_dir='./output/dbc/',
+    name='Summon Darkling Wisps',
+    spell_id=90201,                 # Explicit ID matching registry
+    school_mask=0x20,               # Shadow
+    cast_time_index=1,              # Instant
+    effect_1=28,                    # SPELL_EFFECT_SUMMON
+    effect_1_target_a=1,            # TARGET_UNIT_CASTER
+    description='Summons shadowy wisps to attack nearby enemies.',
+)
+
+shadow_pool_id = register_spell(
+    dbc_dir='./output/dbc/',
+    name='Shadow Pool',
+    spell_id=90202,
+    school_mask=0x20,               # Shadow
+    cast_time_index=1,
+    duration_index=21,              # 12 seconds
+    effect_1=6,                     # SPELL_EFFECT_APPLY_AURA
+    effect_1_aura=3,                # SPELL_AURA_PERIODIC_DAMAGE
+    effect_1_base_points=0,         # Visual only -- damage from separate spell
+    effect_1_target_a=1,
+    description='Creates a pool of shadow energy on the ground.',
+)
+
+shadow_pool_dmg_id = register_spell(
+    dbc_dir='./output/dbc/',
+    name='Shadow Pool Damage',
+    spell_id=90203,
+    school_mask=0x20,
+    cast_time_index=1,
+    duration_index=21,
+    effect_1=6,
+    effect_1_aura=3,
+    effect_1_base_points=2000,
+    effect_1_radius_index=13,       # 10 yard radius
+    effect_1_target_a=22,           # TARGET_UNIT_AREA_ENEMY_SRC
+    description='Deals periodic shadow damage to enemies in the pool.',
+)
+
+lightning_lash_id = register_spell(
+    dbc_dir='./output/dbc/',
+    name='Lightning Lash',
+    spell_id=90204,
+    school_mask=0x08,               # Nature
+    cast_time_index=1,
+    range_index=6,                  # 30 yards
+    cooldown=6000,
+    effect_1=2,                     # SPELL_EFFECT_SCHOOL_DAMAGE
+    effect_1_base_points=4500,
+    effect_1_target_a=6,            # TARGET_UNIT_TARGET_ENEMY (chain)
+    description='Strikes the target with chain lightning, jumping to nearby enemies.',
+)
+
+# ---------------------------------------------------------------
+# 2. Set up spell registry (maps readable names to IDs)
 # ---------------------------------------------------------------
 registry = SpellRegistry(base_spell_id=90200)
 
@@ -1115,7 +1278,7 @@ registry.register_spell(
 )
 
 # ---------------------------------------------------------------
-# 2. Define the boss encounter
+# 3. Define the boss encounter
 # ---------------------------------------------------------------
 boss_def = {
     'name': 'Storm Shade',
@@ -1252,7 +1415,7 @@ boss_def = {
 }
 
 # ---------------------------------------------------------------
-# 3. Define the instance
+# 4. Define the instance
 # ---------------------------------------------------------------
 instance_def = {
     'name': 'StormVault',
@@ -1272,7 +1435,7 @@ instance_def = {
 }
 
 # ---------------------------------------------------------------
-# 4. Generate Lua scripts
+# 5. Generate Lua scripts
 # ---------------------------------------------------------------
 generator = ScriptGenerator(spell_registry=registry)
 generator.add_instance_script(instance_def)
@@ -1295,7 +1458,7 @@ for warn in validation['warnings']:
     print(f"WARNING: {warn}")
 
 # ---------------------------------------------------------------
-# 5. Generate server-side SQL
+# 6. Generate server-side SQL
 # ---------------------------------------------------------------
 sql_gen = SQLGenerator(start_entry=90700, map_id=801, zone_id=9001)
 
@@ -1436,6 +1599,7 @@ The validator checks for:
 - **[Add New Creature](add_new_creature.md)** -- Prerequisite: creating creature_template entries for bosses and adds
 - **[Add Vendor/Trainer](add_vendor_trainer.md)** -- For creating NPCs that sell boss loot or teach spells
 - **[Change NPC Pathing](change_npc_pathing.md)** -- For bosses or adds that follow waypoint patrol routes
+- **Spell Convenience APIs** -- `from world_builder import register_spell, modify_spell, register_spell_icon` for Spell.dbc registration and modification
 - **SpellRegistry API** -- `world_builder/spell_registry.py` for spell ID management
 - **ScriptGenerator API** -- `world_builder/script_generator.py` for Eluna Lua generation
 - **SQLGenerator SmartAI API** -- `world_builder/sql_generator.py` SmartAIBuilder for SQL-only scripting

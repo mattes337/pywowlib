@@ -13,7 +13,11 @@ This guide walks through every step required to add a completely new creature (N
 1. **Server-side only** (reusing an existing model): Define the creature in the `creature_template` table, place spawns in the `creature` table, and optionally configure cosmetic addons. No client patches required.
 2. **Client + Server** (custom model): Register the model in `CreatureModelData.dbc` and `CreatureDisplayInfo.dbc` on the client, place the `.m2` and `.blp` model files inside the client MPQ, then perform the same server-side work.
 
-The pywowlib toolkit provides `SQLGenerator` for all server-side SQL and `DBCInjector` for all client-side DBC modifications.
+The pywowlib toolkit provides:
+
+- `register_creature_model()` and `register_creature_display()` for client-side DBC registration
+- `SQLGenerator` for all server-side SQL generation
+- `DBCInjector` for low-level DBC manipulation (if you need direct byte-level control)
 
 ---
 
@@ -80,257 +84,117 @@ Proceed to [Step 2](#step-2-client-side-register-a-custom-model-in-dbc-files).
 
 ## Step 2: Client-Side -- Register a Custom Model in DBC Files
 
-This step uses the `DBCInjector` class to modify two DBC files that must be distributed to all game clients.
+This step registers your custom model in two DBC files that must be distributed to all game clients. The `world_builder` module provides convenience functions that handle all byte packing and string block management internally.
 
 ### 2.1 CreatureModelData.dbc
 
 This DBC maps model IDs to `.m2` file paths. Each creature display references a model data entry.
 
-**DBC Layout (WotLK 3.3.5a):**
+**DBC Layout (WotLK 3.3.5a):** 28 fields, 112 bytes per record. Key fields include model path, scale, collision dimensions, and bounding box. See the field layout comment in `dbc_injector.py` for the full schema.
 
-| Index | Field | Type | Description |
-|-------|-------|------|-------------|
-| 0 | ID | uint32 | Unique model data ID |
-| 1 | Flags | uint32 | Model flags (typically 0) |
-| 2 | ModelName | string | Path to .m2 file (string block offset) |
-| 3 | SizeClass | uint32 | Size class (0=small, 1=medium, 2=large) |
-| 4 | ModelScale | float | Base model scale (1.0 = normal) |
-| 5 | BloodID | uint32 | Blood splash effect ID |
-| 6 | FootprintTextureID | uint32 | Footprint texture ID |
-| 7 | FootprintTextureLength | float | Footprint texture length |
-| 8 | FootprintTextureWidth | float | Footprint texture width |
-| 9 | FootprintParticleScale | float | Footprint particle scale |
-| 10 | FoleyMaterialID | uint32 | Footstep sound material |
-| 11 | FootstepShakeSize | uint32 | Camera shake on footstep |
-| 12 | DeathThudShakeSize | uint32 | Camera shake on death |
-| 13 | SoundID | uint32 | Sound ID reference |
-| 14 | CollisionWidth | float | Collision box width |
-| 15 | CollisionHeight | float | Collision box height |
-| 16 | MountHeight | float | Mount point height |
-| 17 | GeoBoxMinX | float | Bounding box min X |
-| 18 | GeoBoxMinY | float | Bounding box min Y |
-| 19 | GeoBoxMinZ | float | Bounding box min Z |
-| 20 | GeoBoxMaxX | float | Bounding box max X |
-| 21 | GeoBoxMaxY | float | Bounding box max Y |
-| 22 | GeoBoxMaxZ | float | Bounding box max Z |
-| 23 | WorldEffectScale | float | Particle/effect scale |
-| 24 | AttachedEffectScale | float | Attached effect scale |
-| 25 | MissileCollisionRadius | float | Projectile collision radius |
-| 26 | MissileCollisionPush | float | Projectile collision push |
-| 27 | MissileCollisionRaise | float | Projectile collision raise |
-
-**Record Size**: 28 fields = 112 bytes
-
-**Python code to inject a CreatureModelData record:**
+**Python code using `register_creature_model()`:**
 
 ```python
-import struct
-from world_builder.dbc_injector import DBCInjector
+from world_builder import register_creature_model
 
-def register_creature_model_data(
-    dbc_dir,
-    model_path,          # e.g. "Creature\\CustomBeast\\CustomBeast.m2"
-    model_id=None,
-    model_scale=1.0,
-    size_class=1,        # 0=small, 1=medium, 2=large
-    collision_width=0.5,
-    collision_height=2.0,
-    mount_height=0.0,
-):
-    """
-    Register a new model in CreatureModelData.dbc.
-
-    Args:
-        dbc_dir: Path to directory containing CreatureModelData.dbc.
-        model_path: MPQ-internal path to the .m2 file.
-        model_id: Specific ID or None for auto (max_id + 1).
-        model_scale: Base display scale (1.0 = normal size).
-        size_class: 0=small, 1=medium, 2=large.
-        collision_width: Width of collision cylinder.
-        collision_height: Height of collision cylinder.
-        mount_height: Height offset for mounting (0 if not mountable).
-
-    Returns:
-        int: The assigned model data ID.
-    """
-    import os
-    filepath = os.path.join(dbc_dir, 'CreatureModelData.dbc')
-    dbc = DBCInjector(filepath)
-
-    if model_id is None:
-        model_id = dbc.get_max_id() + 1
-
-    # Add model path string to string block
-    model_path_offset = dbc.add_string(model_path)
-
-    # Build the 112-byte record (28 uint32/float fields)
-    buf = bytearray()
-    buf += struct.pack('<I', model_id)              # 0: ID
-    buf += struct.pack('<I', 0)                     # 1: Flags
-    buf += struct.pack('<I', model_path_offset)     # 2: ModelName (string offset)
-    buf += struct.pack('<I', size_class)            # 3: SizeClass
-    buf += struct.pack('<f', model_scale)           # 4: ModelScale
-    buf += struct.pack('<I', 0)                     # 5: BloodID
-    buf += struct.pack('<I', 0)                     # 6: FootprintTextureID
-    buf += struct.pack('<f', 0.0)                   # 7: FootprintTextureLength
-    buf += struct.pack('<f', 0.0)                   # 8: FootprintTextureWidth
-    buf += struct.pack('<f', 0.0)                   # 9: FootprintParticleScale
-    buf += struct.pack('<I', 0)                     # 10: FoleyMaterialID
-    buf += struct.pack('<I', 0)                     # 11: FootstepShakeSize
-    buf += struct.pack('<I', 0)                     # 12: DeathThudShakeSize
-    buf += struct.pack('<I', 0)                     # 13: SoundID
-    buf += struct.pack('<f', collision_width)        # 14: CollisionWidth
-    buf += struct.pack('<f', collision_height)       # 15: CollisionHeight
-    buf += struct.pack('<f', mount_height)           # 16: MountHeight
-    # Bounding box (reasonable defaults for a medium creature)
-    buf += struct.pack('<f', -1.0)                  # 17: GeoBoxMinX
-    buf += struct.pack('<f', -1.0)                  # 18: GeoBoxMinY
-    buf += struct.pack('<f', 0.0)                   # 19: GeoBoxMinZ
-    buf += struct.pack('<f', 1.0)                   # 20: GeoBoxMaxX
-    buf += struct.pack('<f', 1.0)                   # 21: GeoBoxMaxY
-    buf += struct.pack('<f', 2.0)                   # 22: GeoBoxMaxZ
-    buf += struct.pack('<f', 1.0)                   # 23: WorldEffectScale
-    buf += struct.pack('<f', 1.0)                   # 24: AttachedEffectScale
-    buf += struct.pack('<f', 0.0)                   # 25: MissileCollisionRadius
-    buf += struct.pack('<f', 0.0)                   # 26: MissileCollisionPush
-    buf += struct.pack('<f', 0.0)                   # 27: MissileCollisionRaise
-
-    dbc.records.append(bytes(buf))
-    dbc.write(filepath)
-
-    return model_id
+model_id = register_creature_model(
+    dbc_dir='./output/dbc/',
+    model_path='Creature\\CustomBeast\\CustomBeast.m2',  # MPQ-internal .m2 path
+    model_scale=1.0,            # Base model scale (default 1.0)
+    collision_width=0.5,        # Collision capsule width (default 0.5)
+    collision_height=2.0,       # Collision capsule height (default 2.0)
+    bounding_box=None,          # Optional ((min_x,min_y,min_z), (max_x,max_y,max_z))
+    # model_id=None,            # Auto-assigns next available ID
+)
+print(f"Assigned ModelData ID: {model_id}")
 ```
+
+**`register_creature_model()` parameter reference:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `dbc_dir` | str | required | Path to directory containing CreatureModelData.dbc |
+| `model_path` | str | required | MPQ-internal path to the .m2 file |
+| `model_id` | int/None | None | Specific model ID, or None for auto (max_id + 1) |
+| `collision_width` | float | 0.5 | Collision capsule width |
+| `collision_height` | float | 2.0 | Collision capsule height |
+| `model_scale` | float | 1.0 | Base model scale |
+| `bounding_box` | tuple/None | None | ((min_x, min_y, min_z), (max_x, max_y, max_z)) |
 
 ### 2.2 CreatureDisplayInfo.dbc
 
 This DBC defines the visual appearance of a creature: which model to use, what textures to apply, what scale, opacity, and sound configuration.
 
-**DBC Layout (WotLK 3.3.5a):**
+**DBC Layout (WotLK 3.3.5a):** 16 fields, 64 bytes per record. Includes model reference, texture variations, portrait, size class, and blood/particle settings.
 
-| Index | Field | Type | Description |
-|-------|-------|------|-------------|
-| 0 | ID | uint32 | Unique display ID (this is what creature_template references) |
-| 1 | ModelID | uint32 | FK to CreatureModelData.dbc |
-| 2 | SoundID | uint32 | CreatureSoundData.dbc reference |
-| 3 | ExtendedDisplayInfoID | uint32 | CreatureDisplayInfoExtra.dbc (armor appearance) |
-| 4 | CreatureModelScale | float | Scale multiplier (stacks with model base scale) |
-| 5 | CreatureModelAlpha | uint32 | Opacity: 255 = fully opaque, 0 = invisible |
-| 6 | TextureVariation1 | string | Primary texture override (string offset) |
-| 7 | TextureVariation2 | string | Secondary texture override (string offset) |
-| 8 | TextureVariation3 | string | Tertiary texture override (string offset) |
-| 9 | PortraitTextureName | string | Portrait icon texture (string offset) |
-| 10 | BloodLevel | uint32 | Blood splatter intensity |
-| 11 | BloodID | uint32 | UnitBloodLevels.dbc reference |
-| 12 | NPCSoundID | uint32 | NPC ambient sound reference |
-| 13 | ParticleColorID | uint32 | Particle color override |
-
-**Record Size**: 14 fields = 56 bytes
-
-**Python code to inject a CreatureDisplayInfo record:**
+**Python code using `register_creature_display()`:**
 
 ```python
-def register_creature_display_info(
-    dbc_dir,
-    model_id,               # FK to CreatureModelData.dbc
-    display_id=None,
-    scale=1.0,
-    opacity=255,
-    sound_id=0,
-    extended_display_info=0,
-    texture1='',
-    texture2='',
-    texture3='',
-    portrait_texture='',
-    blood_level=0,
-    blood_id=0,
-    npc_sound_id=0,
-    particle_color_id=0,
-):
-    """
-    Register a new creature display in CreatureDisplayInfo.dbc.
+from world_builder import register_creature_display
 
-    Args:
-        dbc_dir: Path to directory containing CreatureDisplayInfo.dbc.
-        model_id: CreatureModelData.dbc ID for the 3D model.
-        display_id: Specific ID or None for auto (max_id + 1).
-        scale: Display scale multiplier (1.0 = use model default).
-        opacity: Alpha transparency (255 = opaque, 0 = invisible).
-        sound_id: CreatureSoundData reference (0 = silent).
-        extended_display_info: CreatureDisplayInfoExtra reference (0 = none).
-        texture1: Primary texture variation filename (empty = use model default).
-        texture2: Secondary texture variation.
-        texture3: Tertiary texture variation.
-        portrait_texture: Unit portrait texture path.
-        blood_level: Blood splatter intensity.
-        blood_id: UnitBloodLevels.dbc reference.
-        npc_sound_id: Ambient NPC sound.
-        particle_color_id: Particle color override.
-
-    Returns:
-        int: The assigned display ID.
-    """
-    import os
-    filepath = os.path.join(dbc_dir, 'CreatureDisplayInfo.dbc')
-    dbc = DBCInjector(filepath)
-
-    if display_id is None:
-        display_id = dbc.get_max_id() + 1
-
-    # Add texture strings to string block
-    tex1_offset = dbc.add_string(texture1) if texture1 else 0
-    tex2_offset = dbc.add_string(texture2) if texture2 else 0
-    tex3_offset = dbc.add_string(texture3) if texture3 else 0
-    portrait_offset = dbc.add_string(portrait_texture) if portrait_texture else 0
-
-    # Build the 56-byte record (14 fields)
-    buf = bytearray()
-    buf += struct.pack('<I', display_id)              # 0: ID
-    buf += struct.pack('<I', model_id)                # 1: ModelID
-    buf += struct.pack('<I', sound_id)                # 2: SoundID
-    buf += struct.pack('<I', extended_display_info)    # 3: ExtendedDisplayInfoID
-    buf += struct.pack('<f', scale)                    # 4: CreatureModelScale
-    buf += struct.pack('<I', opacity)                  # 5: CreatureModelAlpha
-    buf += struct.pack('<I', tex1_offset)              # 6: TextureVariation1
-    buf += struct.pack('<I', tex2_offset)              # 7: TextureVariation2
-    buf += struct.pack('<I', tex3_offset)              # 8: TextureVariation3
-    buf += struct.pack('<I', portrait_offset)          # 9: PortraitTextureName
-    buf += struct.pack('<I', blood_level)              # 10: BloodLevel
-    buf += struct.pack('<I', blood_id)                 # 11: BloodID
-    buf += struct.pack('<I', npc_sound_id)             # 12: NPCSoundID
-    buf += struct.pack('<I', particle_color_id)        # 13: ParticleColorID
-
-    dbc.records.append(bytes(buf))
-    dbc.write(filepath)
-
-    return display_id
+display_id = register_creature_display(
+    dbc_dir='./output/dbc/',
+    model_id=model_id,          # FK to CreatureModelData.dbc (from step 2.1)
+    scale=1.0,                  # Scale multiplier (default 1.0)
+    alpha=255,                  # Opacity: 255=opaque, 0=invisible (default 255)
+    textures=['StormElementalSkin01'],  # Up to 3 texture override paths
+    portrait_texture=None,      # Optional portrait texture path
+    sound_id=0,                 # FK to CreatureSoundData.dbc (default 0)
+    size_class=2,               # 1=small, 2=medium, 3=large (default 2)
+    blood_id=0,                 # Blood splash type (default 0)
+    # display_id=None,          # Auto-assigns next available ID
+)
+print(f"Assigned Display ID: {display_id}")
 ```
+
+**`register_creature_display()` parameter reference:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `dbc_dir` | str | required | Path to directory containing CreatureDisplayInfo.dbc |
+| `model_id` | int | required | FK to CreatureModelData.dbc |
+| `display_id` | int/None | None | Specific display ID, or None for auto (max_id + 1) |
+| `sound_id` | int | 0 | FK to CreatureSoundData.dbc (0 = none) |
+| `scale` | float | 1.0 | Model scale multiplier |
+| `alpha` | int | 255 | Transparency (255 = opaque) |
+| `textures` | list/None | None | Up to 3 texture override paths |
+| `portrait_texture` | str/None | None | Portrait texture path |
+| `size_class` | int | 2 | 1=small, 2=medium, 3=large |
+| `blood_id` | int | 0 | Blood splash type |
 
 ### 2.3 Putting It Together -- Register Both DBC Entries
 
+The full pipeline is: register the model path, then register the display appearance linking the model to textures.
+
 ```python
-# Register the 3D model file path
-model_id = register_creature_model_data(
+from world_builder import register_creature_model, register_creature_display
+
+# Step A: Register the 3D model file path
+model_id = register_creature_model(
     dbc_dir='./output/dbc/',
     model_path='Creature\\StormElemental\\StormElemental.m2',
-    model_scale=1.5,        # 50% larger than default
-    size_class=2,            # Large creature
+    model_scale=1.5,            # 50% larger than default
     collision_width=1.0,
     collision_height=3.0,
+    bounding_box=((-1.5, -1.5, 0.0), (1.5, 1.5, 3.5)),  # Custom bounding box
 )
 print(f"Assigned ModelData ID: {model_id}")
 
-# Register the display appearance using that model
-display_id = register_creature_display_info(
+# Step B: Register the display appearance using that model
+display_id = register_creature_display(
     dbc_dir='./output/dbc/',
     model_id=model_id,
     scale=1.0,
-    opacity=255,
-    texture1='StormElementalSkin01',
+    alpha=255,
+    textures=['StormElementalSkin01'],
+    size_class=3,               # Large creature
 )
 print(f"Assigned Display ID: {display_id}")
 
-# Use this display_id as 'modelid1' in creature_template (Step 4)
+# Step C: Use this display_id as 'modelid1' in creature_template (Step 4)
 ```
+
+> **Note:** When reusing an existing model (Option A from Step 1), you do not need to call either function. Simply use the existing `display_id` from `CreatureDisplayInfo.dbc` directly as `modelid1` in your `creature_template` definition.
 
 ---
 
@@ -845,17 +709,37 @@ Below is a complete, self-contained script that creates a creature with spawns, 
 """
 Complete example: Add a new creature to WoW 3.3.5a
 Generates all server-side SQL needed for a hostile elite elemental NPC.
+For a custom model variant, see the DBC registration block below.
 """
 
+from world_builder import register_creature_model, register_creature_display
 from world_builder.sql_generator import SQLGenerator
 
 # ---------------------------------------------------------------
-# 1. Initialize the SQL generator
+# 1. (Optional) Register a custom model in DBC files
+#    Skip this block if reusing an existing display ID.
+# ---------------------------------------------------------------
+# model_id = register_creature_model(
+#     dbc_dir='./output/dbc/',
+#     model_path='Creature\\StormElemental\\StormElemental.m2',
+#     model_scale=1.5,
+#     collision_width=1.0,
+#     collision_height=3.0,
+# )
+# display_id = register_creature_display(
+#     dbc_dir='./output/dbc/',
+#     model_id=model_id,
+#     textures=['StormElementalSkin01'],
+#     size_class=3,
+# )
+
+# ---------------------------------------------------------------
+# 2. Initialize the SQL generator
 # ---------------------------------------------------------------
 gen = SQLGenerator(start_entry=90500, map_id=0, zone_id=1519)
 
 # ---------------------------------------------------------------
-# 2. Define the creature template
+# 3. Define the creature template
 # ---------------------------------------------------------------
 gen.add_creatures([
     {
@@ -863,6 +747,7 @@ gen.add_creatures([
         'name': 'Stormbound Sentinel',
         'subname': 'Guardian of the Vault',
         'modelid1': 26693,            # Existing display ID (reuse)
+        # 'modelid1': display_id,     # Use this instead for a custom model
         'minlevel': 80,
         'maxlevel': 80,
         'faction': 16,                # Hostile to all players
@@ -890,7 +775,7 @@ gen.add_creatures([
 ])
 
 # ---------------------------------------------------------------
-# 3. Spawn creatures in the game world
+# 4. Spawn creatures in the game world
 # ---------------------------------------------------------------
 gen.add_spawns([
     # Spawn 1: Stationary guard
@@ -922,7 +807,7 @@ gen.add_spawns([
 ])
 
 # ---------------------------------------------------------------
-# 4. Add SmartAI combat behavior
+# 5. Add SmartAI combat behavior
 # ---------------------------------------------------------------
 gen.add_smartai({
     90500: {
@@ -957,13 +842,13 @@ gen.add_smartai({
 })
 
 # ---------------------------------------------------------------
-# 5. Write the SQL file
+# 6. Write the SQL file
 # ---------------------------------------------------------------
 gen.write_sql('./output/sql/creature_stormbound_sentinel.sql')
 print("SQL written to ./output/sql/creature_stormbound_sentinel.sql")
 
 # ---------------------------------------------------------------
-# 6. Validate cross-references
+# 7. Validate cross-references
 # ---------------------------------------------------------------
 validation = gen.validate()
 if validation['valid']:
@@ -1032,5 +917,6 @@ mysql -u root -p acore_world < ./output/sql/creature_stormbound_sentinel.sql
 - **[Update Boss Mechanics](update_boss_mechanics.md)** -- For complex Eluna Lua boss scripts with multi-phase encounters, timer-based abilities, and phase transitions
 - **[Add Vendor/Trainer](add_vendor_trainer.md)** -- For creatures that sell items or teach spells/skills
 - **[Change NPC Pathing](change_npc_pathing.md)** -- For setting up waypoint patrol routes and linking them via creature_addon
+- **Convenience APIs** -- `from world_builder import register_creature_model, register_creature_display` for DBC registration
 - **SQLGenerator API** -- `world_builder/sql_generator.py` for complete API reference
 - **DBCInjector API** -- `world_builder/dbc_injector.py` for low-level DBC manipulation

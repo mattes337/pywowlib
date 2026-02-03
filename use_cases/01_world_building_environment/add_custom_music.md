@@ -49,7 +49,7 @@ AreaTable.dbc (area_id)
   '-- field 35 LightID     --> Light.dbc         --> LightParams.dbc
 ```
 
-### SoundEntries.dbc (client-only, not injected by pywowlib)
+### SoundEntries.dbc
 
 `SoundEntries.dbc` is the master table that maps a sound ID to one or more
 physical MP3/WAV files on disk. Each entry contains:
@@ -67,15 +67,10 @@ physical MP3/WAV files on disk. Each entry contains:
 | MinDistance | float | Minimum audible distance |
 | MaxDistance | float | Maximum audible distance (falloff) |
 
-The pywowlib toolkit does **not** currently provide a `register_sound_entry()`
-function, because SoundEntries.dbc has a complex layout with 10 file slots and
-10 frequency slots. You have two options:
-
-1. **Reuse an existing SoundEntries ID** from the retail data. For example,
-   Grizzly Hills daytime music is sound entry `11803`. This is the fastest
-   approach and avoids SoundEntries injection entirely.
-2. **Manually inject a SoundEntries record** using the low-level `DBCInjector`
-   class. A complete example is provided in Step 2 below.
+The `dbc_injector` module provides a `register_sound_entry()` convenience
+function that handles the full 31-field record layout automatically. You can
+also reuse an existing SoundEntries ID from the retail data (e.g., Grizzly
+Hills daytime music is sound entry `11803`) to skip this step entirely.
 
 ### ZoneMusic.dbc
 
@@ -129,124 +124,42 @@ DAY_AMBIENCE_MP3 = "Sound\\Ambience\\TelAbim\\TelAbim_DayAmb.mp3"
 NIGHT_AMBIENCE_MP3 = "Sound\\Ambience\\TelAbim\\TelAbim_NightAmb.mp3"
 ```
 
-### Step 2 -- Register SoundEntries (Manual DBC Injection)
+### Step 2 -- Register SoundEntries
 
-If you want to use completely custom audio files, you must first register them
-in SoundEntries.dbc. This step uses the low-level `DBCInjector` class because
-there is no high-level convenience function for SoundEntries.
+If you want to use completely custom audio files, register them in
+SoundEntries.dbc using the `register_sound_entry()` convenience function.
 
 ```python
-import struct
-import os
-from world_builder.dbc_injector import DBCInjector
-
-# ------------------------------------------------------------------
-# SoundEntries.dbc field layout (3.3.5.12340)
-#
-# Index  Field                   Type
-# -----  ----------------------  --------
-#  0     ID                      uint32
-#  1     SoundType               uint32      28=music, 50=ambience
-#  2     Name                    string
-#  3-12  File[0..9]              string[10]  filenames
-# 13-22  Freq[0..9]              uint32[10]  frequency weights
-# 23     DirectoryBase           string      base directory path
-# 24     VolumeFloat             float       0.0 -- 1.0
-# 25     Flags                   uint32
-# 26     MinDistance              float
-# 27     MaxDistance              float
-# 28     DistanceCutoff          float
-# 29     EAXDef                  uint32
-# 30     SoundEntriesAdvancedID  uint32
-# Total: 31 fields = 124 bytes
-# ------------------------------------------------------------------
-
-_SOUNDENTRIES_FIELD_COUNT = 31
-_SOUNDENTRIES_RECORD_SIZE = _SOUNDENTRIES_FIELD_COUNT * 4  # 124 bytes
+from world_builder.dbc_injector import register_sound_entry
 
 DBC_DIR = r"C:\Games\WoW335\DBFilesClient"
 
-
-def register_sound_entry(dbc_dir, name, sound_type, filenames,
-                         directory_base, volume=1.0, sound_id=None):
-    """
-    Register a custom SoundEntries.dbc record.
-
-    Args:
-        dbc_dir:        Path to DBFilesClient directory.
-        name:           Internal name (e.g. "TelAbimDayMusic").
-        sound_type:     28 for zone music, 50 for zone ambience.
-        filenames:      List of MP3/WAV filenames (max 10).
-                        These are just the filename portion, not the
-                        full path (the directory is set separately).
-        directory_base: Base directory within MPQ
-                        (e.g. "Sound\\Music\\ZoneMusic\\TelAbim\\").
-        volume:         Playback volume, 0.0 to 1.0 (default 1.0).
-        sound_id:       Specific ID or None for auto-assignment.
-
-    Returns:
-        int: The assigned SoundEntries ID.
-    """
-    filepath = os.path.join(dbc_dir, 'SoundEntries.dbc')
-    dbc = DBCInjector(filepath)
-
-    if sound_id is None:
-        sound_id = dbc.get_max_id() + 1
-
-    # Allocate string offsets
-    name_offset = dbc.add_string(name)
-    dir_offset = dbc.add_string(directory_base)
-
-    # Build file name offsets (up to 10 slots, pad with 0)
-    file_offsets = []
-    for i in range(10):
-        if i < len(filenames):
-            file_offsets.append(dbc.add_string(filenames[i]))
-        else:
-            file_offsets.append(0)
-
-    # Build frequency weights (equal weight for all provided files)
-    freq_weights = []
-    for i in range(10):
-        if i < len(filenames):
-            freq_weights.append(1)
-        else:
-            freq_weights.append(0)
-
-    # Build the 124-byte record
-    buf = bytearray(_SOUNDENTRIES_RECORD_SIZE)
-    struct.pack_into('<I', buf, 0, sound_id)          # ID
-    struct.pack_into('<I', buf, 4, sound_type)         # SoundType
-    struct.pack_into('<I', buf, 8, name_offset)        # Name
-    for i in range(10):
-        struct.pack_into('<I', buf, 12 + i * 4, file_offsets[i])  # File[i]
-    for i in range(10):
-        struct.pack_into('<I', buf, 52 + i * 4, freq_weights[i])  # Freq[i]
-    struct.pack_into('<I', buf, 92, dir_offset)        # DirectoryBase
-    struct.pack_into('<f', buf, 96, volume)            # VolumeFloat
-    struct.pack_into('<I', buf, 100, 0)                # Flags
-    struct.pack_into('<f', buf, 104, 8.0)              # MinDistance
-    struct.pack_into('<f', buf, 108, 45.0)             # MaxDistance
-    struct.pack_into('<f', buf, 112, 100.0)            # DistanceCutoff
-    struct.pack_into('<I', buf, 116, 0)                # EAXDef
-    struct.pack_into('<I', buf, 120, 0)                # SoundEntriesAdvancedID
-
-    dbc.records.append(bytes(buf))
-    dbc.write(filepath)
-
-    return sound_id
-
-
 # ------------------------------------------------------------------
+# register_sound_entry() parameters:
+#
+#   dbc_dir         Path to directory containing SoundEntries.dbc
+#   name            Internal name for the sound entry
+#   sound_type      1=spell, 2=ambient, 6=zone_music, 50=zone_ambience
+#   files           List of up to 10 sound file names
+#   directory_base  Base directory path for files (e.g. "Sound\\Music\\")
+#   sound_id        Specific sound ID or None for auto (max_id + 1)
+#   volume          Volume multiplier 0.0-1.0 (default 1.0)
+#   min_distance    Min audible distance (default 8.0)
+#   max_distance    Max audible distance (default 45.0)
+#   flags           Playback flags (default 0)
+#   frequencies     Optional list of playback weights per file
+#
+# Returns: int -- the assigned sound entry ID
+# ------------------------------------------------------------------
+
 # Register four SoundEntries: day music, night music, day ambience,
 # night ambience
-# ------------------------------------------------------------------
 
 day_music_id = register_sound_entry(
     dbc_dir=DBC_DIR,
     name="TelAbimDayMusic",
     sound_type=28,                        # 28 = zone music
-    filenames=["TelAbim_Day01.mp3"],
+    files=["TelAbim_Day01.mp3"],
     directory_base="Sound\\Music\\ZoneMusic\\TelAbim\\",
     volume=0.7,
 )
@@ -256,7 +169,7 @@ night_music_id = register_sound_entry(
     dbc_dir=DBC_DIR,
     name="TelAbimNightMusic",
     sound_type=28,
-    filenames=["TelAbim_Night01.mp3"],
+    files=["TelAbim_Night01.mp3"],
     directory_base="Sound\\Music\\ZoneMusic\\TelAbim\\",
     volume=0.6,
 )
@@ -266,7 +179,7 @@ day_ambience_id = register_sound_entry(
     dbc_dir=DBC_DIR,
     name="TelAbimDayAmbience",
     sound_type=50,                        # 50 = zone ambience
-    filenames=["TelAbim_DayAmb.mp3"],
+    files=["TelAbim_DayAmb.mp3"],
     directory_base="Sound\\Ambience\\TelAbim\\",
     volume=0.5,
 )
@@ -276,12 +189,32 @@ night_ambience_id = register_sound_entry(
     dbc_dir=DBC_DIR,
     name="TelAbimNightAmbience",
     sound_type=50,
-    filenames=["TelAbim_NightAmb.mp3"],
+    files=["TelAbim_NightAmb.mp3"],
     directory_base="Sound\\Ambience\\TelAbim\\",
     volume=0.4,
 )
 print("Night ambience SoundEntries ID:", night_ambience_id)
 ```
+
+#### SoundEntries.dbc Field Reference
+
+| Index | Field | Type | Description |
+|---|---|---|---|
+| 0 | ID | uint32 | Unique sound entry ID |
+| 1 | SoundType | uint32 | Category (28 = zone music, 50 = zone ambience) |
+| 2 | Name | string | Internal identifier |
+| 3-12 | File[0..9] | string[10] | Up to 10 MP3/WAV filenames |
+| 13-22 | Freq[0..9] | uint32[10] | Play frequency weights for each file |
+| 23 | DirectoryBase | string | Base directory path within the MPQ |
+| 24 | VolumeFloat | float | Playback volume (0.0 -- 1.0) |
+| 25 | Flags | uint32 | Playback flags |
+| 26 | MinDistance | float | Minimum audible distance |
+| 27 | MaxDistance | float | Maximum audible distance (falloff) |
+| 28 | DistanceCutoff | float | Distance cutoff |
+| 29 | EAXDef | uint32 | EAX definition |
+| 30 | SoundEntriesAdvancedID | uint32 | Advanced sound reference |
+
+**Total: 31 fields = 124 bytes per record**
 
 **Alternative: Reuse Retail SoundEntries IDs**
 
@@ -585,9 +518,8 @@ Complete example: Add custom music and ambience to a WoW 3.3.5a zone.
 """
 
 import os
-import struct
 from world_builder.dbc_injector import (
-    DBCInjector,
+    register_sound_entry,
     register_zone_music,
     register_sound_ambience,
     register_light,
@@ -608,59 +540,41 @@ MAP_ID = 800             # Map this area belongs to
 # Step 1: Register SoundEntries for custom MP3 files
 # ------------------------------------------------------------------
 
-def _register_sound(dbc_dir, name, stype, files, base_dir, vol=1.0):
-    """Minimal SoundEntries injector (see Step 2 for field layout)."""
-    fp = os.path.join(dbc_dir, 'SoundEntries.dbc')
-    dbc = DBCInjector(fp)
-    sid = dbc.get_max_id() + 1
-    name_off = dbc.add_string(name)
-    dir_off = dbc.add_string(base_dir)
-    file_offs = [dbc.add_string(f) if i < len(files) else 0
-                 for i, f in enumerate([None]*10)
-                 if True]
-    # Correct approach: build file offsets properly
-    file_offs = []
-    for i in range(10):
-        if i < len(files):
-            file_offs.append(dbc.add_string(files[i]))
-        else:
-            file_offs.append(0)
-    buf = bytearray(124)
-    struct.pack_into('<I', buf, 0, sid)
-    struct.pack_into('<I', buf, 4, stype)
-    struct.pack_into('<I', buf, 8, name_off)
-    for i in range(10):
-        struct.pack_into('<I', buf, 12 + i*4, file_offs[i])
-    for i in range(10):
-        struct.pack_into('<I', buf, 52 + i*4, 1 if i < len(files) else 0)
-    struct.pack_into('<I', buf, 92, dir_off)
-    struct.pack_into('<f', buf, 96, vol)
-    struct.pack_into('<f', buf, 104, 8.0)
-    struct.pack_into('<f', buf, 108, 45.0)
-    struct.pack_into('<f', buf, 112, 100.0)
-    dbc.records.append(bytes(buf))
-    dbc.write(fp)
-    return sid
+day_music_id = register_sound_entry(
+    dbc_dir=DBC_DIR,
+    name="TelAbimDayMusic",
+    sound_type=28,
+    files=["TelAbim_Day01.mp3"],
+    directory_base="Sound\\Music\\ZoneMusic\\TelAbim\\",
+    volume=0.7,
+)
 
-day_music_id = _register_sound(
-    DBC_DIR, "TelAbimDayMusic", 28,
-    ["TelAbim_Day01.mp3"],
-    "Sound\\Music\\ZoneMusic\\TelAbim\\", 0.7)
+night_music_id = register_sound_entry(
+    dbc_dir=DBC_DIR,
+    name="TelAbimNightMusic",
+    sound_type=28,
+    files=["TelAbim_Night01.mp3"],
+    directory_base="Sound\\Music\\ZoneMusic\\TelAbim\\",
+    volume=0.6,
+)
 
-night_music_id = _register_sound(
-    DBC_DIR, "TelAbimNightMusic", 28,
-    ["TelAbim_Night01.mp3"],
-    "Sound\\Music\\ZoneMusic\\TelAbim\\", 0.6)
+day_amb_id = register_sound_entry(
+    dbc_dir=DBC_DIR,
+    name="TelAbimDayAmb",
+    sound_type=50,
+    files=["TelAbim_DayAmb.mp3"],
+    directory_base="Sound\\Ambience\\TelAbim\\",
+    volume=0.5,
+)
 
-day_amb_id = _register_sound(
-    DBC_DIR, "TelAbimDayAmb", 50,
-    ["TelAbim_DayAmb.mp3"],
-    "Sound\\Ambience\\TelAbim\\", 0.5)
-
-night_amb_id = _register_sound(
-    DBC_DIR, "TelAbimNightAmb", 50,
-    ["TelAbim_NightAmb.mp3"],
-    "Sound\\Ambience\\TelAbim\\", 0.4)
+night_amb_id = register_sound_entry(
+    dbc_dir=DBC_DIR,
+    name="TelAbimNightAmb",
+    sound_type=50,
+    files=["TelAbim_NightAmb.mp3"],
+    directory_base="Sound\\Ambience\\TelAbim\\",
+    volume=0.4,
+)
 
 # ------------------------------------------------------------------
 # Step 2: Register ZoneMusic
@@ -751,21 +665,24 @@ selects from the available tracks each time it needs to play music, using the
 frequency weights to bias selection.
 
 ```python
+from world_builder.dbc_injector import register_sound_entry
+
 # Register a SoundEntries with 3 daytime tracks
 day_music_id = register_sound_entry(
     dbc_dir=DBC_DIR,
     name="TelAbimDayMusicSet",
     sound_type=28,
-    filenames=[
+    files=[
         "TelAbim_Day01.mp3",
         "TelAbim_Day02.mp3",
         "TelAbim_Day03.mp3",
     ],
     directory_base="Sound\\Music\\ZoneMusic\\TelAbim\\",
     volume=0.7,
+    frequencies=[2, 1, 1],    # First track plays twice as often
 )
 # The client will randomly pick from the three tracks
-# with equal probability (all frequency weights are 1)
+# biased by the frequency weights
 ```
 
 ### Day/Night Transition Behaviour
@@ -810,6 +727,54 @@ update_area_atmosphere(
     zone_music=dark_cave_music_id,
 )
 ```
+
+### Zone Intro Music (Stinger)
+
+A zone intro music stinger is a short musical phrase that plays once when the
+player first enters a zone (think of the dramatic fanfare when entering
+Stormwind). This is managed through **ZoneIntroMusicTable.dbc** and can be
+registered using the `register_zone_intro_music()` convenience function.
+
+#### ZoneIntroMusicTable.dbc Field Reference
+
+| Index | Field | Type | Description |
+|---|---|---|---|
+| 0 | ID | uint32 | Unique intro music identifier |
+| 1 | Name | string | Internal name |
+| 2 | SoundID | uint32 | FK to SoundEntries.dbc |
+| 3 | Priority | uint32 | Playback priority (default 0) |
+| 4 | MinDelayMinutes | uint32 | Min delay in minutes between plays (default 0) |
+
+**Total: 5 fields = 20 bytes per record**
+
+```python
+from world_builder.dbc_injector import register_sound_entry, register_zone_intro_music
+
+# First register the intro stinger in SoundEntries.dbc
+intro_sound_id = register_sound_entry(
+    dbc_dir=DBC_DIR,
+    name="TelAbimIntro",
+    sound_type=28,                        # Music
+    files=["TelAbim_Intro.mp3"],
+    directory_base="Sound\\Music\\ZoneMusic\\TelAbim\\",
+    volume=0.8,
+)
+
+# Then register the zone intro music entry
+intro_id = register_zone_intro_music(
+    dbc_dir=DBC_DIR,
+    name="TelAbimIntroMusic",
+    sound_id=intro_sound_id,              # FK to SoundEntries
+    intro_id=None,                        # Auto-assign ID (max_id + 1)
+    priority=1,                           # Playback priority
+    min_delay=0,                          # Minimum delay in minutes
+)
+print("ZoneIntroMusic ID:", intro_id)
+```
+
+> **Note**: The intro music ID can be linked to a zone through AreaTable.dbc
+> or directly via the client's zone trigger system, depending on your server
+> emulator's implementation.
 
 ### Silence Interval Tuning
 

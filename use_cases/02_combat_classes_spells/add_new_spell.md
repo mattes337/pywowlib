@@ -3,7 +3,7 @@
 **Complexity**: Advanced |
 **DBC Files**: Spell.dbc, SpellIcon.dbc, SpellVisual.dbc |
 **SQL Tables**: spell_dbc, spell_linked_spell, spell_bonus_data |
-**pywowlib Modules**: `world_builder.dbc_injector.DBCInjector`, `world_builder.spell_registry.SpellRegistry`
+**pywowlib Modules**: `world_builder.dbc_injector.DBCInjector`, `world_builder.dbc_injector.register_spell`, `world_builder.dbc_injector.register_spell_icon`, `world_builder.spell_registry.SpellRegistry`
 
 ---
 
@@ -14,6 +14,90 @@ Adding a completely new spell to WoW WotLK 3.3.5a (build 12340) is one of the mo
 A custom spell must exist in both places with matching IDs and compatible data. If the client has a spell record that the server does not recognize, casting will fail silently. If the server has a spell the client lacks, the player sees no tooltip, no icon, and no cast bar animation.
 
 This guide walks through the entire process: reserving a safe custom spell ID, creating SpellIcon and SpellVisual entries, constructing the 234-field Spell.dbc binary record, registering the spell through SpellRegistry for project-wide tracking, and configuring the server-side SQL entries.
+
+---
+
+## Quick Start: Convenience API
+
+pywowlib provides high-level wrapper functions that handle the binary record construction for you. For most use cases, these are the recommended approach:
+
+```python
+from world_builder import register_spell, register_spell_icon
+
+DBC_DIR = "C:/Games/WoW335/Data/DBFilesClient"
+
+# Create a spell icon (optional -- you can reuse a stock SpellIcon ID instead)
+icon_id = register_spell_icon(
+    dbc_dir=DBC_DIR,
+    texture_path="Interface\\Icons\\Spell_Fire_Fireball02",
+    # icon_id=None  -- auto-assigns the next available ID
+)
+
+# Register a new fireball variant in Spell.dbc
+spell_id = register_spell(
+    dbc_dir=DBC_DIR,
+    name="Mega Fireball",
+    spell_id=90001,                 # explicit ID, or None for auto
+    school_mask=0x04,               # Fire
+    cast_time_index=5,              # 2.0 second cast
+    range_index=4,                  # 30 yards
+    mana_cost=200,
+    cooldown=6000,                  # 6 seconds
+    gcd=1500,                       # standard GCD
+    effect_1=2,                     # SCHOOL_DAMAGE
+    effect_1_base_points=499,       # displays as 500
+    effect_1_target_a=6,            # TARGET_UNIT_TARGET_ENEMY
+    spell_icon_id=icon_id,
+    spell_visual_id=13,             # reuse stock Fireball visual
+    description="Hurls a massive fireball, dealing $s1 Fire damage.",
+    attributes=0,
+    attributes_ex=0,
+    # Any _SPELL_FIELD_MAP field name can be passed as an extra kwarg:
+    Speed=24.0,                     # projectile speed (float field)
+    EffectBonusCoefficient0=0.7143, # spell power coefficient (float field)
+)
+print("Created spell ID:", spell_id)
+```
+
+`register_spell()` accepts named parameters for the most commonly used fields and also passes through arbitrary `**kwargs` using the `_SPELL_FIELD_MAP` names (see the full field layout table in Step 1 below). It builds the 936-byte binary record, appends it to Spell.dbc, and writes the file in a single call.
+
+`register_spell_icon()` creates a new SpellIcon.dbc entry and returns the assigned icon ID.
+
+The full parameter list for `register_spell()`:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `dbc_dir` | (required) | Path to directory containing Spell.dbc |
+| `name` | (required) | Spell display name (enUS locstring) |
+| `spell_id` | `None` | Specific ID or `None` for auto (max_id + 1) |
+| `school_mask` | `0x01` | Damage school bitmask |
+| `cast_time_index` | `1` | FK to SpellCastTimes.dbc (1 = instant) |
+| `duration_index` | `0` | FK to SpellDuration.dbc (0 = no duration) |
+| `range_index` | `0` | FK to SpellRange.dbc (0 = self) |
+| `power_type` | `0` | 0=mana, 1=rage, 2=focus, 3=energy, 6=runic |
+| `mana_cost` | `0` | Base resource cost |
+| `cooldown` | `0` | RecoveryTime in milliseconds |
+| `gcd` | `1500` | StartRecoveryTime in milliseconds |
+| `effect_1` .. `effect_3` | `0` | Effect type for each slot |
+| `effect_1_base_points` .. `effect_3_base_points` | `0` | Base value per effect |
+| `effect_1_aura` .. `effect_3_aura` | `0` | Aura type per effect |
+| `effect_1_target_a` / `_b` | `0` | Implicit targeting per effect |
+| `effect_1_radius_index` | `0` | SpellRadius.dbc FK per effect |
+| `effect_1_trigger_spell` | `0` | Triggered spell ID per effect |
+| `effect_1_item_type` | `0` | Item type mask per effect |
+| `effect_1_misc_value` | `0` | Miscellaneous value per effect |
+| `spell_icon_id` | `1` | FK to SpellIcon.dbc |
+| `spell_visual_id` | `0` | FK to SpellVisual.dbc |
+| `name_subtext` | `None` | Rank/subtext locstring |
+| `description` | `None` | Tooltip description locstring |
+| `aura_description` | `None` | Aura tooltip locstring |
+| `attributes` | `0` | Spell attributes bitmask |
+| `attributes_ex` | `0` | Extended attributes bitmask |
+| `category` | `0` | Spell category ID |
+| `mechanic` | `0` | Spell mechanic type |
+| `**kwargs` | | Any `_SPELL_FIELD_MAP` field name for advanced overrides |
+
+The manual record-building approach documented below remains valuable for understanding the binary layout and for cases where you need full control over every field.
 
 ---
 
@@ -172,7 +256,23 @@ registry = SpellRegistry(base_spell_id=90000)
 
 ## Step 3: Create a SpellIcon Entry
 
-Every spell needs an icon. The icon is defined in `SpellIcon.dbc`, which has the simplest possible layout:
+Every spell needs an icon. The icon is defined in `SpellIcon.dbc`, which has the simplest possible layout.
+
+**Recommended approach** -- use the convenience wrapper:
+
+```python
+from world_builder import register_spell_icon
+
+icon_id = register_spell_icon(
+    dbc_dir=DBC_DIR,
+    texture_path="Interface\\Icons\\Spell_Shadow_ShadowBolt",
+    # icon_id=None  -- auto-assigns next available ID
+)
+```
+
+`register_spell_icon()` creates a new SpellIcon.dbc entry with the given texture path and returns the assigned icon ID. Pass an explicit `icon_id` to use a specific value, or leave it as `None` for auto-assignment.
+
+The field layout and manual approach are documented below for reference:
 
 ```
 Index   Field               Type      Notes
@@ -437,6 +537,8 @@ registry.export_json_config('output/spell_config.json')
 ---
 
 ## Step 6: Build the Spell.dbc Record
+
+> **Note**: For most use cases, `register_spell()` from the Quick Start section above handles this entire step automatically. The manual approach below is provided for reference and for cases where you need field-level control beyond what the convenience parameters offer.
 
 This is the core step. You must construct a 936-byte binary record containing all 234 fields. The helper function below packs locstrings correctly and sets the most important fields for a basic direct-damage spell.
 
@@ -754,6 +856,8 @@ def build_spell_record(dbc, spell_id, name, description,
 
 ## Step 7: Inject the Spell Record into Spell.dbc
 
+> **Note**: `register_spell()` performs record building and injection in a single call. The manual approach below is kept for reference.
+
 ```python
 def add_custom_spell(dbc_dir, spell_id, name, description, **kwargs):
     """
@@ -976,7 +1080,59 @@ The most critical aspect of custom spells is keeping the client and server in sy
 
 ## Step 10: Complete Working Example
 
-Here is a complete self-contained script that adds a custom spell end-to-end:
+### Using the Convenience API (Recommended)
+
+```python
+"""
+Complete example: Add a custom "Arcane Barrage" spell (ID 90010)
+using register_spell(). Instant cast, 3-second cooldown, 600-800 Arcane damage.
+"""
+from world_builder import register_spell, register_spell_icon
+from world_builder.spell_registry import SpellRegistry
+
+DBC_DIR = "C:/Games/WoW335/Data/DBFilesClient"
+
+# --- 1. Registry (optional, for project-wide ID tracking) ---
+registry = SpellRegistry(base_spell_id=90010)
+spell_id = registry.register_spell(
+    spell_name='SPELL_ARCANE_BARRAGE_CUSTOM',
+    description='Launches bolts of arcane energy, causing $s1 Arcane damage.',
+    spell_data={'school': 'arcane', 'damage_min': 600, 'damage_max': 800},
+    boss_label='Custom NPC Spells',
+)
+
+# --- 2. Inject into Spell.dbc with one call ---
+register_spell(
+    dbc_dir=DBC_DIR,
+    name="Arcane Barrage",
+    spell_id=spell_id,
+    school_mask=0x40,                   # Arcane
+    cast_time_index=1,                  # Instant
+    range_index=4,                      # 30 yards
+    cooldown=3000,                      # 3-second cooldown
+    gcd=1500,
+    effect_1=2,                         # SCHOOL_DAMAGE
+    effect_1_base_points=599,           # displays as 600
+    effect_1_target_a=6,                # TARGET_UNIT_TARGET_ENEMY
+    spell_icon_id=2271,                 # stock Arcane Barrage icon
+    spell_visual_id=11244,              # stock Arcane Barrage visual
+    description="Launches bolts of arcane energy at the enemy target, "
+                "causing $s1 Arcane damage.",
+    # Advanced fields via _SPELL_FIELD_MAP kwargs:
+    DefenseType=1,                      # Magic
+    PreventionType=1,                   # Silence prevents
+    EffectDieSides0=201,                # 600-800 range (599+1 to 599+201)
+    EffectBonusCoefficient0=0.7143,     # ~71.4% spell power coefficient
+)
+print("Spell {} injected into Spell.dbc".format(spell_id))
+
+# --- 3. Export constants ---
+registry.export_lua_constants('output/spell_constants.lua')
+```
+
+### Manual Approach (Full Control)
+
+The following example uses the lower-level `build_spell_record` function for full field-level control:
 
 ```python
 """

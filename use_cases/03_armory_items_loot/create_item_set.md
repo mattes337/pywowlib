@@ -1,6 +1,6 @@
 # Create Item Set
 
-**Complexity:** Advanced | **Estimated Time:** 45-90 minutes | **Files Modified:** ItemSet.dbc, item_template SQL, optionally Spell.dbc
+**Complexity:** Advanced | **Estimated Time:** 45-90 minutes | **Files Modified:** ItemSet.dbc, item_template SQL, optionally Spell.dbc | **Key APIs:** `world_builder.dbc_injector.register_item_set`, `world_builder.dbc_injector.register_spell`, `world_builder.sql_generator.SQLGenerator`
 
 ## Overview
 
@@ -113,107 +113,18 @@ Before writing any code, plan your set structure:
 
 ## Step 3: Create the ItemSet.dbc Entry
 
-### Python Code: Inject ItemSet.dbc Record
+### Python Code: Register ItemSet.dbc Record (Recommended)
+
+The `register_item_set()` convenience function handles locstring packing,
+record construction, auto-ID assignment, and DBC file I/O in a single call:
 
 ```python
-import struct
-import os
-from world_builder.dbc_injector import DBCInjector, _pack_locstring
+from world_builder import register_item_set
 
-def create_item_set(
-    dbc_dir,
-    set_id,
-    set_name,
-    item_ids,
-    set_spells=None,
-    required_skill=0,
-    required_skill_rank=0,
-):
-    """
-    Create a new ItemSet.dbc record for WotLK 3.3.5a.
-
-    Args:
-        dbc_dir: Path to directory containing ItemSet.dbc.
-        set_id: Unique item set ID.
-        set_name: Display name for the set (English).
-        item_ids: List of item entry IDs in the set (max 17).
-        set_spells: List of dicts with 'spell_id' and 'threshold' keys.
-                    Example: [
-                        {'spell_id': 70803, 'threshold': 2},
-                        {'spell_id': 70804, 'threshold': 4},
-                    ]
-                    Max 8 set bonus spells.
-        required_skill: SkillLine ID required to benefit (0=none).
-        required_skill_rank: Minimum skill rank (0=none).
-
-    Returns:
-        int: The set_id that was injected.
-    """
-    filepath = os.path.join(dbc_dir, 'ItemSet.dbc')
-    dbc = DBCInjector(filepath)
-
-    if set_spells is None:
-        set_spells = []
-
-    # Pad item_ids to exactly 17 entries
-    padded_items = list(item_ids)[:17]
-    while len(padded_items) < 17:
-        padded_items.append(0)
-
-    # Pad set_spells to exactly 8 entries
-    padded_spells = list(set_spells)[:8]
-    while len(padded_spells) < 8:
-        padded_spells.append({'spell_id': 0, 'threshold': 0})
-
-    # Add set name to string block
-    name_offset = dbc.add_string(set_name)
-
-    # Build the record
-    buf = bytearray()
-
-    # Field 0: ID
-    buf += struct.pack('<I', set_id)
-
-    # Fields 1-17: Name_lang (locstring, 17 uint32)
-    # enUS at slot 0, mask at slot 16 (within locstring)
-    buf += _pack_locstring(name_offset)
-
-    # Fields 18-34: ItemID[17]
-    for item_id in padded_items:
-        buf += struct.pack('<I', item_id)
-
-    # Fields 35-42: SetSpellID[8]
-    for sp in padded_spells:
-        buf += struct.pack('<I', sp.get('spell_id', 0))
-
-    # Fields 43-50: SetThreshold[8]
-    for sp in padded_spells:
-        buf += struct.pack('<I', sp.get('threshold', 0))
-
-    # Field 51: RequiredSkill
-    buf += struct.pack('<I', required_skill)
-
-    # Field 52: RequiredSkillRank
-    buf += struct.pack('<I', required_skill_rank)
-
-    # Verify size: 53 fields * 4 bytes = 212 bytes
-    expected_size = 53 * 4
-    assert len(buf) == expected_size, (
-        "ItemSet record size mismatch: expected {}, got {}".format(
-            expected_size, len(buf))
-    )
-
-    dbc.records.append(bytes(buf))
-    dbc.write(filepath)
-
-    return set_id
-
-
-# Example: Create a 5-piece plate DPS tier set
-create_item_set(
+# Create a 5-piece plate DPS tier set
+set_id = register_item_set(
     dbc_dir='C:/wow335/DBFilesClient',
-    set_id=900,
-    set_name='Stormforged Battlegear',
+    name='Stormforged Battlegear',
     item_ids=[
         90020,  # Head
         90021,  # Shoulders
@@ -221,11 +132,79 @@ create_item_set(
         90023,  # Hands
         90024,  # Legs
     ],
-    set_spells=[
-        {'spell_id': 70803, 'threshold': 2},  # 2pc bonus
-        {'spell_id': 70804, 'threshold': 4},  # 4pc bonus
+    bonuses=[
+        (2, 70803),  # 2-piece bonus: spell 70803
+        (4, 70804),  # 4-piece bonus: spell 70804
     ],
+    set_id=900,               # Explicit ID (omit for auto max_id + 1)
 )
+print("Registered ItemSet.dbc entry:", set_id)
+```
+
+**`register_item_set()` Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `dbc_dir` | str | (required) | Path to directory containing ItemSet.dbc |
+| `name` | str | (required) | Set display name (e.g. "Battlegear of Wrath") |
+| `item_ids` | list[int] | (required) | Up to 17 item entry IDs in the set |
+| `bonuses` | list[tuple] / None | None | List of `(piece_count, spell_id)` tuples, up to 8 |
+| `set_id` | int / None | None | Specific set ID, or None for auto (max_id + 1) |
+| `required_skill` | int | 0 | FK to SkillLine.dbc (0=none) |
+| `required_skill_rank` | int | 0 | Required skill level (0=none) |
+
+**Returns:** `int` -- the assigned set ID.
+
+**Bonuses format:** Each tuple is `(piece_count, spell_id)`. For example,
+`(2, 70803)` means "when 2 set pieces are equipped, apply spell 70803." The
+function maps these into the SetSpellID and SetThreshold arrays internally.
+
+### Auto-ID Assignment
+
+When `set_id` is omitted, the function reads the current highest ID from
+ItemSet.dbc and assigns `max_id + 1`:
+
+```python
+from world_builder import register_item_set
+
+auto_set_id = register_item_set(
+    dbc_dir='C:/wow335/DBFilesClient',
+    name='Frostweave Regalia',
+    item_ids=[90030, 90031, 90032],
+    bonuses=[(3, 12345)],     # 3-piece bonus
+)
+print("Auto-assigned set ID:", auto_set_id)
+```
+
+### Low-Level Alternative
+
+If you need finer control over the 212-byte binary record, you can use
+`DBCInjector` and `_pack_locstring` directly:
+
+```python
+import struct
+import os
+from world_builder.dbc_injector import DBCInjector, _pack_locstring
+
+filepath = os.path.join('C:/wow335/DBFilesClient', 'ItemSet.dbc')
+dbc = DBCInjector(filepath)
+
+name_offset = dbc.add_string('Stormforged Battlegear')
+
+buf = bytearray()
+buf += struct.pack('<I', 900)                    # ID
+buf += _pack_locstring(name_offset)              # Name_lang (17 uint32)
+items = [90020, 90021, 90022, 90023, 90024] + [0] * 12
+buf += struct.pack('<17I', *items)               # ItemID[17]
+spells = [70803, 70804] + [0] * 6
+buf += struct.pack('<8I', *spells)               # SetSpellID[8]
+thresholds = [2, 4] + [0] * 6
+buf += struct.pack('<8I', *thresholds)           # SetThreshold[8]
+buf += struct.pack('<II', 0, 0)                  # RequiredSkill, RequiredSkillRank
+
+assert len(buf) == 212
+dbc.records.append(bytes(buf))
+dbc.write(filepath)
 ```
 
 ### Understanding _pack_locstring
@@ -413,9 +392,83 @@ The simplest approach is to reuse existing spell IDs from Blizzard's Spell.dbc. 
 
 To find spell IDs for existing set bonuses, browse ItemSet.dbc records and cross-reference their SetSpellID fields, or look up set bonuses on Wowhead and note the spell IDs from the tooltip URLs.
 
-### Creating Custom Set Bonus Spells in Spell.dbc
+### Creating Custom Set Bonus Spells with register_spell()
 
-If you need entirely custom set bonus effects, you must create new Spell.dbc entries. This is advanced and requires understanding the Spell.dbc field layout.
+If you need entirely custom set bonus effects, use `register_spell()` to create
+new Spell.dbc entries. For a passive set bonus aura, the key parameters are:
+
+- `effect_1=6` (SPELL_EFFECT_APPLY_AURA)
+- `effect_1_aura` set to the desired aura type
+- `effect_1_target_a=1` (TARGET_UNIT_CASTER)
+- `attributes=0x00000480` (PASSIVE + NOT_CASTABLE)
+- `duration_index=21` (infinite/permanent)
+
+#### Python Code: Create a Custom Set Bonus Spell (Recommended)
+
+```python
+from world_builder import register_spell
+
+# 2-piece bonus: +10% damage done (all schools)
+bonus_2pc_spell = register_spell(
+    dbc_dir='C:/wow335/DBFilesClient',
+    name='Stormforged 2P Bonus',
+    description='Increases all damage done by $s1%.',
+    attributes=0x00000480,       # PASSIVE + NOT_CASTABLE
+    cast_time_index=1,           # Instant
+    duration_index=21,           # Infinite (permanent while equipped)
+    range_index=1,               # Self only
+    effect_1=6,                  # SPELL_EFFECT_APPLY_AURA
+    effect_1_aura=13,            # SPELL_AURA_MOD_DAMAGE_PERCENT_DONE
+    effect_1_base_points=9,      # +10% (base_points = actual_value - 1)
+    effect_1_target_a=1,         # TARGET_UNIT_CASTER
+    effect_1_misc_value=127,     # School mask (127 = all schools)
+    spell_icon_id=1,             # Generic icon
+)
+
+# 4-piece bonus: +6% melee haste
+bonus_4pc_spell = register_spell(
+    dbc_dir='C:/wow335/DBFilesClient',
+    name='Stormforged 4P Bonus',
+    description='Increases melee haste by $s1%.',
+    attributes=0x00000480,
+    cast_time_index=1,
+    duration_index=21,
+    range_index=1,
+    effect_1=6,                  # SPELL_EFFECT_APPLY_AURA
+    effect_1_aura=79,            # SPELL_AURA_MOD_MELEE_HASTE
+    effect_1_base_points=5,      # +6% (base_points = value - 1)
+    effect_1_target_a=1,
+    spell_icon_id=1,
+)
+
+print("2pc spell:", bonus_2pc_spell)
+print("4pc spell:", bonus_4pc_spell)
+```
+
+**`register_spell()` Parameters (key fields for set bonuses):**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `dbc_dir` | str | (required) | Path to directory containing Spell.dbc |
+| `name` | str | (required) | Spell display name (enUS locstring) |
+| `spell_id` | int/None | None | Specific ID, or None for auto (max_id + 1) |
+| `attributes` | int | 0 | Spell attributes bitmask (0x00000480 for passive set bonuses) |
+| `cast_time_index` | int | 1 | FK to SpellCastTimes.dbc (1 = instant) |
+| `duration_index` | int | 0 | FK to SpellDuration.dbc (21 = infinite) |
+| `range_index` | int | 0 | FK to SpellRange.dbc (1 = self) |
+| `effect_1` | int | 0 | Effect type (6 = APPLY_AURA) |
+| `effect_1_aura` | int | 0 | Aura type (13=damage%, 79=haste, etc.) |
+| `effect_1_base_points` | int | 0 | Effect magnitude minus 1 |
+| `effect_1_target_a` | int | 0 | Implicit target (1 = caster) |
+| `effect_1_misc_value` | int | 0 | Misc value (school mask for damage mods) |
+| `description` | str/None | None | Tooltip description (supports $s1 for effect value) |
+| `spell_icon_id` | int | 1 | FK to SpellIcon.dbc |
+| `**kwargs` | | | Any additional Spell.dbc field by _SPELL_FIELD_MAP name |
+
+**Returns:** `int` -- the assigned spell ID.
+
+The function supports all three effect slots (`effect_1`/`effect_2`/`effect_3`)
+and accepts additional Spell.dbc field overrides via `**kwargs`.
 
 #### Spell.dbc WotLK 3.3.5a Layout Summary
 
@@ -434,214 +487,11 @@ The Spell.dbc for build 3.3.3.11685 through 3.3.5.12340 is one of the largest DB
 | Name_lang | Spell name | Tooltip title |
 | Description_lang | Spell description | Tooltip body text (supports $s1 for effect value) |
 
-#### Python Code: Create a Custom Set Bonus Spell
+#### Low-Level Alternative
 
-```python
-import struct
-import os
-from world_builder.dbc_injector import DBCInjector, _pack_locstring
-
-def create_set_bonus_spell(
-    dbc_dir,
-    spell_id,
-    name,
-    description,
-    effect_type=6,         # SPELL_EFFECT_APPLY_AURA
-    aura_type=13,          # SPELL_AURA_MOD_DAMAGE_PERCENT_DONE
-    base_points=9,         # +10% (base_points = actual_value - 1)
-    misc_value=127,        # School mask (127 = all schools)
-):
-    """
-    Create a minimal passive set bonus spell in Spell.dbc.
-
-    This creates a spell that applies a passive aura when the set
-    bonus condition is met. The spell is flagged as passive so it
-    cannot be manually cast.
-
-    WARNING: Spell.dbc has a very large record format (~234 fields).
-    This function constructs the full record with zeros for unused
-    fields and only populates the critical fields for a passive aura.
-
-    Args:
-        dbc_dir: Path to directory containing Spell.dbc.
-        spell_id: Unique spell ID.
-        name: Spell/bonus name (e.g., "Stormforged 2P Bonus").
-        description: Tooltip description (e.g., "Increases damage by $s1%.").
-        effect_type: Spell effect type (6=APPLY_AURA for set bonuses).
-        aura_type: Aura type to apply.
-        base_points: Effect magnitude minus 1 (e.g., 9 for +10%).
-        misc_value: Effect misc value (school mask for damage mods).
-
-    Returns:
-        int: The spell_id that was injected.
-    """
-    filepath = os.path.join(dbc_dir, 'Spell.dbc')
-    dbc = DBCInjector(filepath)
-
-    # Get field count and record size from the loaded DBC
-    field_count = dbc.field_count
-    record_size = dbc.record_size
-
-    # Add strings
-    name_off = dbc.add_string(name)
-    desc_off = dbc.add_string(description)
-
-    # Build a zero-filled record and patch specific fields
-    buf = bytearray(record_size)
-
-    # We need to know the exact field layout for 3.3.5.
-    # Spell.dbc 3.3.3-3.3.5 layout from the .dbd definition:
-    # The order of fields is listed in the BUILD 3.3.3.11685-3.3.5.12340 block.
-    #
-    # Field positions (0-based uint32 index):
-    #  0: ID
-    #  1: Category
-    #  2: DispelType
-    #  3: Mechanic
-    #  4: Attributes        -- set passive flag here
-    #  5: AttributesEx
-    #  6: AttributesExB
-    #  7: AttributesExC
-    #  8: AttributesExD
-    #  9: AttributesExE
-    # 10: AttributesExF
-    # 11: AttributesExG
-    # 12-13: ShapeshiftMask[2]
-    # 14-15: ShapeshiftExclude[2]
-    # 16: Targets
-    # 17: TargetCreatureType
-    # 18: RequiresSpellFocus
-    # 19: FacingCasterFlags
-    # 20: CasterAuraState
-    # 21: TargetAuraState
-    # 22: ExcludeCasterAuraState
-    # 23: ExcludeTargetAuraState
-    # 24: CasterAuraSpell
-    # 25: TargetAuraSpell
-    # 26: ExcludeCasterAuraSpell
-    # 27: ExcludeTargetAuraSpell
-    # 28: CastingTimeIndex  -- 1 = instant
-    # 29: RecoveryTime
-    # 30: CategoryRecoveryTime
-    # 31: InterruptFlags
-    # 32: AuraInterruptFlags
-    # 33: ChannelInterruptFlags
-    # 34: ProcTypeMask
-    # 35: ProcChance
-    # 36: ProcCharges
-    # 37: MaxLevel
-    # 38: BaseLevel
-    # 39: SpellLevel
-    # 40: DurationIndex     -- 21 = infinite
-    # 41: PowerType
-    # 42: ManaCost
-    # 43: ManaCostPerLevel
-    # 44: ManaPerSecond
-    # 45: ManaPerSecondPerLevel
-    # 46: RangeIndex         -- 1 = self
-    # 47: Speed (float)
-    # 48: ModalNextSpell
-    # 49: CumulativeAura
-    # 50-51: Totem[2]
-    # 52-59: Reagent[8]
-    # 60-67: ReagentCount[8]
-    # 68: EquippedItemClass
-    # 69: EquippedItemSubclass
-    # 70: EquippedItemInvTypes
-    # 71-73: Effect[3]         -- spell effect types
-    # 74-76: EffectDieSides[3]
-    # 77-79: EffectBaseDice[3]
-    # 80-82: EffectDicePerLevel[3]
-    # 83-85: EffectRealPointsPerLevel[3] (float)
-    # 86-88: EffectBasePoints[3]
-    # 89-91: EffectMechanic[3]
-    # 92-94: ImplicitTargetA[3]
-    # 95-97: ImplicitTargetB[3]
-    # 98-100: EffectRadiusIndex[3]
-    # 101-103: EffectAura[3]
-    # 104-106: EffectAuraPeriod[3]
-    # 107-109: EffectAmplitude[3] (float)
-    # 110-112: EffectChainTargets[3]
-    # 113-115: EffectItemType[3]
-    # 116-118: EffectMiscValue[3]
-    # 119-121: EffectMiscValueB[3]
-    # 122-124: EffectTriggerSpell[3]
-    # 125-127: EffectPointsPerCombo[3] (float)
-    # 128-130: EffectSpellClassMaskA[3]
-    # 131-133: EffectSpellClassMaskB[3]
-    # 134-136: EffectSpellClassMaskC[3]
-    # 137-138: SpellVisualID[2]
-    # 139: SpellIconID
-    # 140: ActiveIconID
-    # 141: SpellPriority
-    # 142-158: Name_lang        (17 uint32 locstring)
-    # 159-175: NameSubtext_lang (17 uint32 locstring)
-    # 176-192: Description_lang (17 uint32 locstring)
-    # 193-209: AuraDescription_lang (17 uint32 locstring)
-    # 210: ManaCostPct
-    # 211: StartRecoveryCategory
-    # 212: StartRecoveryTime
-    # 213: MaxTargetLevel
-    # 214: SpellClassSet
-    # 215-217: SpellClassMask[3]
-    # 218: MaxTargets
-    # 219: DefenseType
-    # 220: PreventionType
-    # 221: StanceBarOrder
-    # 222-224: EffectChainAmplitude[3] (float)
-    # 225: MinFactionID
-    # 226: MinReputation
-    # 227: RequiredAuraVision
-    # 228-229: RequiredTotemCategoryID[2]
-    # 230: RequiredAreasID
-    # 231: SchoolMask
-    # 232: RuneCostID
-    # 233: SpellMissileID
-
-    def set_uint32(field_index, value):
-        struct.pack_into('<I', buf, field_index * 4, value)
-
-    def set_int32(field_index, value):
-        struct.pack_into('<i', buf, field_index * 4, value)
-
-    def set_float(field_index, value):
-        struct.pack_into('<f', buf, field_index * 4, value)
-
-    def set_locstring(start_field, string_offset):
-        # 17 uint32: slot 0 = enUS, slot 16 = mask
-        set_uint32(start_field, string_offset)
-        set_uint32(start_field + 16, 0xFFFFFFFF)
-
-    # Core fields
-    set_uint32(0, spell_id)          # ID
-    set_uint32(4, 0x00000480)        # Attributes: PASSIVE(0x400) + NOT_CASTABLE(0x80)
-    set_uint32(28, 1)                # CastingTimeIndex = 1 (instant)
-    set_uint32(35, 101)              # ProcChance (101 = always, for passive)
-    set_uint32(40, 21)               # DurationIndex = 21 (infinite)
-    set_uint32(46, 1)                # RangeIndex = 1 (self only)
-
-    # EquippedItemClass = -1 (no item requirement)
-    set_int32(68, -1)
-
-    # Effect slot 0
-    set_uint32(71, effect_type)      # Effect[0] = 6 (APPLY_AURA)
-    set_int32(86, base_points)       # EffectBasePoints[0]
-    set_uint32(92, 1)                # ImplicitTargetA[0] = 1 (TARGET_UNIT_CASTER)
-    set_uint32(101, aura_type)       # EffectAura[0]
-    set_int32(116, misc_value)       # EffectMiscValue[0]
-
-    # Visual (use a generic icon)
-    set_uint32(139, 1)               # SpellIconID (generic)
-
-    # Name and Description locstrings
-    set_locstring(142, name_off)     # Name_lang
-    set_locstring(176, desc_off)     # Description_lang
-
-    dbc.records.append(bytes(buf))
-    dbc.write(filepath)
-
-    return spell_id
-```
+For full manual control over the ~234-field spell record, you can still use
+`DBCInjector` directly. See the [Custom Crafting Recipe](custom_crafting_recipe.md)
+guide for an example of low-level Spell.dbc construction.
 
 ### Common Aura Types for Set Bonuses
 
@@ -664,82 +514,85 @@ def create_set_bonus_spell(
 
 ## Step 6: Complete Working Example
 
-This example creates a complete 5-piece plate DPS set with 2-piece and 4-piece bonuses.
+This example creates a complete 5-piece plate DPS set with 2-piece and 4-piece bonuses using the convenience APIs.
 
 ```python
 """
 Complete example: Create a 5-piece plate DPS item set for WotLK 3.3.5a.
 
 Creates:
-1. ItemSet.dbc entry with set name, items, and bonus spells
-2. item_template SQL for all 5 set pieces with itemset linkage
-3. (Optional) Custom set bonus spells in Spell.dbc
+1. (Optional) Custom set bonus spells in Spell.dbc via register_spell()
+2. ItemSet.dbc entry via register_item_set()
+3. item_template SQL for all 5 set pieces with itemset linkage
 
-For this example we reuse existing Blizzard spell IDs for simplicity.
+Prerequisites:
+- Extracted DBC files in DBC_DIR
+- pywowlib on Python path
 """
-import struct
 import os
-from world_builder.dbc_injector import DBCInjector, _pack_locstring
+from world_builder import register_spell, register_item_set
 from world_builder.sql_generator import SQLGenerator
 
 # Configuration
 DBC_DIR = 'C:/wow335/DBFilesClient'
 SQL_OUTPUT = 'output/stormforged_set.sql'
 
-SET_ID = 900
 SET_NAME = 'Stormforged Battlegear'
 ITEM_IDS = [90020, 90021, 90022, 90023, 90024]
 
-# Reuse existing Blizzard spell IDs for set bonuses
-# (alternatively, create custom spells -- see Step 5)
-SPELL_2PC = 70803   # Example: +6% melee haste
-SPELL_4PC = 70804   # Example: +10% Bloodthirst/Mortal Strike damage
+# ----------------------------------------------------------------
+# Step 1: Create set bonus spells via register_spell()
+# ----------------------------------------------------------------
+# (You can also reuse existing Blizzard spell IDs -- see Step 5)
+SPELL_2PC = register_spell(
+    dbc_dir=DBC_DIR,
+    name='Stormforged 2P Bonus',
+    description='Increases melee haste by $s1%.',
+    attributes=0x00000480,       # PASSIVE + NOT_CASTABLE
+    cast_time_index=1,
+    duration_index=21,           # Infinite
+    range_index=1,               # Self
+    effect_1=6,                  # SPELL_EFFECT_APPLY_AURA
+    effect_1_aura=79,            # SPELL_AURA_MOD_MELEE_HASTE
+    effect_1_base_points=5,      # +6%
+    effect_1_target_a=1,         # TARGET_UNIT_CASTER
+    spell_icon_id=1,
+)
+print("[OK] Spell.dbc: 2pc bonus spell {}".format(SPELL_2PC))
+
+SPELL_4PC = register_spell(
+    dbc_dir=DBC_DIR,
+    name='Stormforged 4P Bonus',
+    description='Your Bloodthirst and Mortal Strike deal $s1% more damage.',
+    attributes=0x00000480,
+    cast_time_index=1,
+    duration_index=21,
+    range_index=1,
+    effect_1=6,
+    effect_1_aura=13,            # SPELL_AURA_MOD_DAMAGE_PERCENT_DONE
+    effect_1_base_points=9,      # +10%
+    effect_1_target_a=1,
+    effect_1_misc_value=1,       # Physical school
+    spell_icon_id=1,
+)
+print("[OK] Spell.dbc: 4pc bonus spell {}".format(SPELL_4PC))
 
 # ----------------------------------------------------------------
-# Step 1: Create ItemSet.dbc entry
+# Step 2: Create ItemSet.dbc entry via register_item_set()
 # ----------------------------------------------------------------
-itemset_path = os.path.join(DBC_DIR, 'ItemSet.dbc')
-dbc = DBCInjector(itemset_path)
-
-name_offset = dbc.add_string(SET_NAME)
-
-buf = bytearray()
-
-# Field 0: ID
-buf += struct.pack('<I', SET_ID)
-
-# Fields 1-17: Name_lang (17 uint32)
-buf += _pack_locstring(name_offset)
-
-# Fields 18-34: ItemID[17] -- our 5 items + 12 zeros
-for item_id in ITEM_IDS:
-    buf += struct.pack('<I', item_id)
-for _ in range(17 - len(ITEM_IDS)):
-    buf += struct.pack('<I', 0)
-
-# Fields 35-42: SetSpellID[8]
-buf += struct.pack('<I', SPELL_2PC)    # Slot 0: 2-piece bonus
-buf += struct.pack('<I', SPELL_4PC)    # Slot 1: 4-piece bonus
-for _ in range(6):                     # Remaining 6 slots empty
-    buf += struct.pack('<I', 0)
-
-# Fields 43-50: SetThreshold[8]
-buf += struct.pack('<I', 2)            # Slot 0: need 2 pieces
-buf += struct.pack('<I', 4)            # Slot 1: need 4 pieces
-for _ in range(6):
-    buf += struct.pack('<I', 0)
-
-# Fields 51-52: RequiredSkill, RequiredSkillRank
-buf += struct.pack('<II', 0, 0)
-
-assert len(buf) == 212, "Expected 212, got {}".format(len(buf))
-
-dbc.records.append(bytes(buf))
-dbc.write(itemset_path)
+SET_ID = register_item_set(
+    dbc_dir=DBC_DIR,
+    name=SET_NAME,
+    item_ids=ITEM_IDS,
+    bonuses=[
+        (2, SPELL_2PC),   # 2-piece bonus
+        (4, SPELL_4PC),   # 4-piece bonus
+    ],
+)
 print("[OK] ItemSet.dbc: created set '{}' (ID={})".format(SET_NAME, SET_ID))
 
 # ----------------------------------------------------------------
-# Step 2: Generate item_template SQL for all set pieces
+# Step 3: Generate item_template SQL for all set pieces
 # ----------------------------------------------------------------
 gen = SQLGenerator(start_entry=90020)
 
@@ -866,7 +719,7 @@ print("  2pc Bonus: Spell {}".format(SPELL_2PC))
 print("  4pc Bonus: Spell {}".format(SPELL_4PC))
 print()
 print("Next steps:")
-print("  1. Pack modified ItemSet.dbc into patch MPQ")
+print("  1. Pack modified ItemSet.dbc and Spell.dbc into patch MPQ")
 print("  2. Apply SQL to acore_world database")
 print("  3. Restart worldserver and clear client cache")
 print("  4. Test: .additem 90020-90024, equip 2 and 4 pieces")
@@ -934,6 +787,8 @@ print("  4. Test: .additem 90020-90024, equip 2 and 4 pieces")
 - **[Modify Loot Tables](modify_loot_tables.md)** -- Add your set pieces to boss loot tables
 - **[Custom Crafting Recipe](custom_crafting_recipe.md)** -- Make set pieces craftable via professions
 - **pywowlib API Reference:**
+  - `world_builder.dbc_injector.register_item_set()` -- Convenience wrapper for ItemSet.dbc record creation (auto-ID, 53 fields / 212 bytes)
+  - `world_builder.dbc_injector.register_spell()` -- Convenience wrapper for Spell.dbc record creation (auto-ID, named parameters for common fields)
   - `world_builder.dbc_injector.DBCInjector` -- Low-level DBC read/write
   - `world_builder.dbc_injector._pack_locstring()` -- WotLK localized string helper
   - `world_builder.sql_generator.SQLGenerator.add_items()` -- Item SQL generation with `itemset` support

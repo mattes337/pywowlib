@@ -2,6 +2,16 @@
 
 ## Complexity Rating: Moderate
 
+| Property | Value |
+|---|---|
+| **Complexity** | Moderate |
+| **Client-Side Files** | AddOn files: `.toc`, `.lua`, `.xml` in `Interface/AddOns/` |
+| **Server-Side Files** | None (UI-only modifications) |
+| **pywowlib APIs** | `generate_addon()` (scaffold generation), `MPQPacker` (distribution packaging) |
+| **Estimated Time** | 10-15 minutes for scaffold; 30-60 minutes with custom logic |
+
+## Overview
+
 Creating custom UI frames in World of Warcraft 3.3.5a involves writing AddOns using
 Blizzard's XML layout system and Lua scripting API. Unlike most pywowlib use cases
 that modify DBC files or server databases, AddOn development is a purely client-side
@@ -9,10 +19,16 @@ activity. The AddOn files live in the `Interface/AddOns/` directory and are load
 the WoW client at startup. No server-side changes are needed for UI-only
 modifications.
 
-This guide covers the full AddOn development pipeline: directory structure, TOC file
-format, XML layout elements, Lua scripting APIs, event handling, and how to package
-AddOns into MPQ patches for distribution. The walkthrough example builds a custom
-LFG (Looking For Group) tool addon from scratch.
+pywowlib's `generate_addon()` function can create complete AddOn scaffolds -- TOC file,
+Lua boilerplate, and XML frame definitions -- from a Python script. This removes the
+manual boilerplate step and lets you focus on custom game logic. For complex AddOns
+with advanced UI behavior, the generated scaffold serves as a starting point that you
+extend with hand-written Lua and XML.
+
+This guide covers both approaches:
+- **Quick start with `generate_addon()`** for automated scaffold generation.
+- **Full manual pipeline** for understanding the underlying TOC, XML, and Lua systems.
+- The walkthrough example builds a custom LFG (Looking For Group) tool addon.
 
 ---
 
@@ -20,25 +36,27 @@ LFG (Looking For Group) tool addon from scratch.
 
 1. [Overview and Architecture](#1-overview-and-architecture)
 2. [Prerequisites](#2-prerequisites)
-3. [AddOn Directory Structure](#3-addon-directory-structure)
-4. [TOC File Format](#4-toc-file-format)
-5. [XML Layout Reference](#5-xml-layout-reference)
-6. [Lua API Reference](#6-lua-api-reference)
-7. [Event System](#7-event-system)
-8. [Step-by-Step: Building a Custom LFG Tool](#8-step-by-step-building-a-custom-lfg-tool)
-9. [Advanced XML Elements](#9-advanced-xml-elements)
-10. [Slash Commands](#10-slash-commands)
-11. [Saved Variables (Persistent Data)](#11-saved-variables-persistent-data)
-12. [Packaging AddOns in MPQ Archives](#12-packaging-addons-in-mpq-archives)
-13. [Debugging Techniques](#13-debugging-techniques)
-14. [Common Pitfalls and Troubleshooting](#14-common-pitfalls-and-troubleshooting)
-15. [Cross-References](#15-cross-references)
+3. [Quick Start: generate_addon()](#3-quick-start-generate_addon)
+4. [AddOn Directory Structure](#4-addon-directory-structure)
+5. [TOC File Format](#5-toc-file-format)
+6. [XML Layout Reference](#6-xml-layout-reference)
+7. [Lua API Reference](#7-lua-api-reference)
+8. [Event System](#8-event-system)
+9. [Step-by-Step: Building a Custom LFG Tool](#9-step-by-step-building-a-custom-lfg-tool)
+10. [Advanced XML Elements](#10-advanced-xml-elements)
+11. [Slash Commands](#11-slash-commands)
+12. [Saved Variables (Persistent Data)](#12-saved-variables-persistent-data)
+13. [Packaging AddOns in MPQ Archives](#13-packaging-addons-in-mpq-archives)
+14. [Debugging Techniques](#14-debugging-techniques)
+15. [Common Pitfalls and Troubleshooting](#15-common-pitfalls-and-troubleshooting)
+16. [Cross-References](#16-cross-references)
 
 ---
 
 ## 1. Overview and Architecture
 
-The WoW 3.3.5a UI framework is a layered system:
+The WoW 3.3.5a UI framework is a layered system (see [Quick Start](#3-quick-start-generate_addon)
+for the fastest path to a working AddOn):
 
 ```
 +-------------------------------------------------------+
@@ -86,6 +104,7 @@ and incompatible -- always reference 3.3.5-specific documentation.
 
 | Tool | Purpose |
 |------|---------|
+| Python 3.8+ with pywowlib | Scaffold generation via `generate_addon()` |
 | Text editor (VS Code, Notepad++, etc.) | Editing XML and Lua files |
 | WoW 3.3.5a client | Testing the addon in-game |
 | WoW AddOn Studio (optional) | Visual frame editor for 3.3.5a |
@@ -99,7 +118,195 @@ reject files with incorrect encoding or byte order marks.
 
 ---
 
-## 3. AddOn Directory Structure
+## 3. Quick Start: generate_addon()
+
+The `generate_addon()` function in `world_builder.addon_generator` creates a complete
+AddOn scaffold from Python. It generates the TOC file, a Lua script with event
+handling and slash commands, and an optional XML layout with frame definitions.
+
+### Function Signature
+
+```python
+from world_builder import generate_addon
+
+result = generate_addon(
+    name,                    # AddOn folder and file name (e.g. 'MyAddon')
+    output_dir,              # Parent directory for the AddOn folder
+    title=None,              # Display title in AddOn list (default: name)
+    description=None,        # Notes shown in AddOn list
+    frames=None,             # List of frame definition dicts (see below)
+    events=None,             # List of event name strings to register
+    slash_commands=None,     # List of slash command dicts
+    saved_variables=None,    # List of saved variable names
+    author=None,             # Author name for TOC file
+    version='1.0',           # Version string for TOC file
+)
+```
+
+**Returns** a dict with paths to all generated files:
+
+```python
+{
+    'addon_dir': str,   # Path to addon folder
+    'toc_path': str,    # Path to .toc file
+    'lua_path': str,    # Path to .lua file
+    'xml_path': str,    # Path to .xml file (None if no frames defined)
+}
+```
+
+### Example 1: Minimal AddOn
+
+The simplest possible AddOn -- just a name and output directory:
+
+```python
+from world_builder import generate_addon
+
+result = generate_addon(
+    name="HelloWorld",
+    output_dir=r"C:\WoW\Interface\AddOns",
+)
+# Creates: HelloWorld.toc + HelloWorld.lua (no XML, no events)
+```
+
+### Example 2: AddOn with a Movable Frame
+
+```python
+from world_builder import generate_addon
+
+result = generate_addon(
+    name="MyInfoPanel",
+    output_dir=r"C:\WoW\Interface\AddOns",
+    title="My Info Panel",
+    description="Displays player information in a draggable frame.",
+    author="MyName",
+    frames=[
+        {
+            'name': 'MyInfoPanelMainFrame',
+            'width': 350,
+            'height': 250,
+            'point': 'CENTER',
+            'movable': True,
+            'backdrop': True,
+        },
+    ],
+)
+# Creates: MyInfoPanel.toc + MyInfoPanel.lua + MyInfoPanel.xml
+```
+
+The `frames` parameter accepts a list of dicts with these keys:
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `name` | str | `<AddonName>MainFrame` | Frame global name. |
+| `parent` | str | `UIParent` | Parent frame name. |
+| `width` | int | 300 | Frame width in pixels. |
+| `height` | int | 200 | Frame height in pixels. |
+| `point` | str | `CENTER` | Anchor point (e.g. `CENTER`, `TOPLEFT`). |
+| `movable` | bool | False | Whether the frame can be dragged. |
+| `backdrop` | bool | True | Whether to add a dialog-box background and border. |
+
+### Example 3: AddOn with Events and Slash Commands
+
+```python
+from world_builder import generate_addon
+
+result = generate_addon(
+    name="RaidHelper",
+    output_dir=r"C:\WoW\Interface\AddOns",
+    title="Raid Helper",
+    description="Tracks raid events and provides utility commands.",
+    events=["PLAYER_LOGIN", "GROUP_ROSTER_UPDATE", "PLAYER_REGEN_DISABLED"],
+    slash_commands=[
+        {
+            'command': '/raidhelp',
+            'handler': 'print("Raid Helper commands: /raidhelp show | hide")',
+        },
+    ],
+    saved_variables=["RaidHelperDB"],
+    author="MyGuild",
+    version="2.0",
+)
+```
+
+This generates a Lua file containing:
+- Saved variable initialization (`RaidHelperDB = RaidHelperDB or {}`)
+- An event frame that registers all listed events
+- An `OnEvent` handler with `if/end` branches for each event
+- A slash command registration block
+
+### Example 4: AddOn with Multiple Frames
+
+```python
+from world_builder import generate_addon
+
+result = generate_addon(
+    name="DualPanel",
+    output_dir=r"C:\WoW\Interface\AddOns",
+    title="Dual Panel UI",
+    description="Two-panel interface for inventory and stats.",
+    frames=[
+        {
+            'name': 'DualPanelInventory',
+            'width': 300,
+            'height': 400,
+            'point': 'LEFT',
+            'movable': True,
+            'backdrop': True,
+        },
+        {
+            'name': 'DualPanelStats',
+            'width': 250,
+            'height': 400,
+            'point': 'RIGHT',
+            'movable': False,
+            'backdrop': True,
+        },
+    ],
+    events=["PLAYER_LOGIN", "BAG_UPDATE"],
+    saved_variables=["DualPanelDB"],
+)
+```
+
+### Extending the Generated Scaffold
+
+The generated files are standard WoW AddOn files. After generation, open the `.lua`
+and `.xml` files in a text editor to add custom behavior:
+
+```python
+# Step 1: Generate the scaffold
+from world_builder import generate_addon
+
+result = generate_addon(
+    name="MyAddon",
+    output_dir=r"C:\WoW\Interface\AddOns",
+    title="My Custom Addon",
+    frames=[{'name': 'MyAddonFrame', 'width': 400, 'height': 300, 'movable': True}],
+    events=["PLAYER_LOGIN", "CHAT_MSG_SAY"],
+    slash_commands=[{'command': '/myaddon', 'handler': 'print("MyAddon loaded")'}],
+    saved_variables=["MyAddonDB"],
+)
+
+# Step 2: The generated Lua has placeholder event handlers.
+# Edit the .lua file to add your custom logic:
+#
+#   eventFrame:SetScript("OnEvent", function(self, event, ...)
+#       if event == "PLAYER_LOGIN" then
+#           -- Handle PLAYER_LOGIN       <-- Add your code here
+#       end
+#       if event == "CHAT_MSG_SAY" then
+#           -- Handle CHAT_MSG_SAY       <-- Add your code here
+#       end
+#   end)
+```
+
+> **Note:** `generate_addon()` produces the boilerplate -- TOC metadata, frame XML,
+> event registration, and slash command wiring. Complex AddOn logic (data processing,
+> scroll frames, dropdown menus, addon communication, tooltip integration) still
+> requires WoW Lua API knowledge. See the sections below for the full API reference.
+
+---
+
+## 4. AddOn Directory Structure
 
 Each AddOn lives in its own subdirectory under `Interface/AddOns/`:
 
@@ -131,7 +338,7 @@ World of Warcraft/
 
 ---
 
-## 4. TOC File Format
+## 5. TOC File Format
 
 The `.toc` (Table of Contents) file tells the WoW client what files to load and in
 what order. It is a plain text file with a specific format.
@@ -187,7 +394,7 @@ has not been loaded), you will get a nil reference error.
 
 ---
 
-## 5. XML Layout Reference
+## 6. XML Layout Reference
 
 The WoW UI uses a custom XML schema to define frame hierarchies. All UI elements
 are represented as XML tags with attributes and child elements.
@@ -463,7 +670,7 @@ BOTTOMLEFT  BOTTOM  BOTTOMRIGHT
 
 ---
 
-## 6. Lua API Reference
+## 7. Lua API Reference
 
 ### Frame Creation and Manipulation
 
@@ -618,7 +825,7 @@ PlaySoundFile("Sound\\Interface\\iQuestUpdate.ogg")
 
 ---
 
-## 7. Event System
+## 8. Event System
 
 Events are the backbone of AddOn development. The WoW client fires events when
 game state changes, and your Lua code responds to them.
@@ -685,12 +892,33 @@ end
 
 ---
 
-## 8. Step-by-Step: Building a Custom LFG Tool
+## 9. Step-by-Step: Building a Custom LFG Tool
 
 This section walks through building a complete LFG (Looking For Group) tool addon
 that allows players to list their group needs and browse other groups.
 
 ### Step 1: Create the Directory Structure
+
+You can bootstrap the directory and boilerplate files with `generate_addon()`:
+
+```python
+from world_builder import generate_addon
+
+result = generate_addon(
+    name="CustomLFGTool",
+    output_dir=r"C:\WoW\Interface\AddOns",
+    title="Custom LFG Tool",
+    description="A custom Looking For Group tool for finding and listing dungeon groups.",
+    frames=[{'name': 'CustomLFGToolMainFrame', 'width': 400, 'height': 380, 'movable': True}],
+    events=["ADDON_LOADED", "CHAT_MSG_ADDON", "PLAYER_LOGIN"],
+    slash_commands=[{'command': '/lfgt', 'handler': 'print("Custom LFG Tool")'}],
+    saved_variables=["CustomLFGToolDB"],
+    author="YourName",
+)
+```
+
+Then replace the generated placeholder logic with the full implementation shown below.
+Alternatively, create the files manually:
 
 ```
 Interface/AddOns/CustomLFGTool/
@@ -1318,7 +1546,7 @@ end
 
 ---
 
-## 9. Advanced XML Elements
+## 10. Advanced XML Elements
 
 ### Dropdown Menus
 
@@ -1429,7 +1657,7 @@ end
 
 ---
 
-## 10. Slash Commands
+## 11. Slash Commands
 
 Register slash commands for user interaction:
 
@@ -1480,7 +1708,7 @@ end
 
 ---
 
-## 11. Saved Variables (Persistent Data)
+## 12. Saved Variables (Persistent Data)
 
 Saved Variables allow your addon to persist data between game sessions. They are
 declared in the TOC file and stored as Lua tables in the WTF directory.
@@ -1568,7 +1796,7 @@ end
 
 ---
 
-## 12. Packaging AddOns in MPQ Archives
+## 13. Packaging AddOns in MPQ Archives
 
 For server-wide distribution, AddOns can be packaged inside an MPQ patch file. This
 ensures all players on the server automatically load the addon without manual
@@ -1627,7 +1855,7 @@ packer.build()
 
 ---
 
-## 13. Debugging Techniques
+## 14. Debugging Techniques
 
 ### Enable Script Errors
 
@@ -1698,7 +1926,7 @@ end
 
 ---
 
-## 14. Common Pitfalls and Troubleshooting
+## 15. Common Pitfalls and Troubleshooting
 
 ### "AddOn is not compatible" / "Out of date"
 
@@ -1783,10 +2011,11 @@ end)
 
 ---
 
-## 15. Cross-References
+## 16. Cross-References
 
 | Topic | Guide | Relevance |
 |-------|-------|-----------|
+| AddOn scaffold generator | `world_builder/addon_generator.py` | `generate_addon()` generates complete AddOn boilerplate (TOC, Lua, XML). |
 | LFG dungeon DBC registration | `01_world_building_environment/` | Register custom dungeons in LFGDungeons.dbc that your LFG tool can reference. |
 | Custom flight path display | `06_system_ui/modify_flight_paths.md` | Custom taxi nodes that could be displayed in a custom flight map addon. |
 | DBC injector core API | `world_builder/dbc_injector.py` | Low-level DBC manipulation for any client-side data modifications. |

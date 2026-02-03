@@ -12,6 +12,8 @@ Typical use cases:
 
 - Reshape terrain (raise hills, flatten areas, carve rivers)
 - Swap ground textures (replace grass with snow, sand with lava)
+- Place doodads (.m2 models) and WMOs in existing ADT tiles via
+  `add_doodad_to_adt()` and `add_wmo_to_adt()`
 - Import heightmap data from one ADT into another
 - Analyze and replicate texture painting rules from retail zones
 - Re-pack modified tiles into an MPQ patch
@@ -475,7 +477,113 @@ new_adt = create_adt(
 
 ---
 
-### Step 9 -- Re-Pack into MPQ
+### Step 9 -- Add Doodads and WMOs to ADT Tiles
+
+The `adt_composer` module provides convenience functions for inserting doodad
+(.m2) and WMO placements directly into existing ADT binary data. These
+functions handle all the binary bookkeeping: they update the string blocks
+(MMDX/MWMO), offset tables (MMID/MWID), placement definitions (MDDF/MODF),
+MHDR offsets, and MCIN entries automatically.
+
+#### 9a -- Add a Doodad (.m2 model)
+
+```python
+from world_builder.adt_composer import add_doodad_to_adt
+
+# Read existing ADT binary
+with open(r"C:\extracted\Azeroth_32_48.adt", "rb") as f:
+    adt_bytes = f.read()
+
+# Insert a tree doodad
+adt_bytes = add_doodad_to_adt(
+    adt_bytes,
+    m2_path="World\\Azeroth\\Elwynn\\ElwynnTree01.m2",
+    position=(-8900.0, -120.0, 85.0),  # (x, y, z) world coordinates
+    rotation=(0.0, 0.0, 45.0),         # Degrees; default (0, 0, 0)
+    scale=1024,                         # 1024 = 1.0x scale (uint16)
+    unique_id=0,                        # Placement ID; default 0
+    flags=0,                            # MDDF flags; default 0
+)
+
+# Add several more doodads in sequence
+for i in range(5):
+    adt_bytes = add_doodad_to_adt(
+        adt_bytes,
+        m2_path="World\\Doodads\\Rocks\\RockSmall01.m2",
+        position=(-8850.0 + i * 10.0, -100.0, 82.0),
+        scale=768,                      # 768 = 0.75x scale
+    )
+
+# Write modified ADT back to disk
+with open(r"C:\output\Azeroth_32_48.adt", "wb") as f:
+    f.write(adt_bytes)
+```
+
+#### 9b -- Add a WMO (World Map Object)
+
+```python
+from world_builder.adt_composer import add_wmo_to_adt
+
+# Read existing ADT binary
+with open(r"C:\extracted\Azeroth_32_48.adt", "rb") as f:
+    adt_bytes = f.read()
+
+# Insert a building WMO
+adt_bytes = add_wmo_to_adt(
+    adt_bytes,
+    wmo_path="World\\wmo\\Azeroth\\Buildings\\Stormwind\\Stormwind.wmo",
+    position=(-8800.0, -100.0, 80.0),  # (x, y, z) world coordinates
+    rotation=(0.0, 0.0, 90.0),         # Degrees; default (0, 0, 0)
+    extents=None,                       # Bounding box or None (uses position)
+    unique_id=0,                        # Placement ID; default 0
+    flags=0,                            # MODF flags; default 0
+    doodad_set=0,                       # Doodad set index; default 0
+    name_set=0,                         # Name set index; default 0
+    scale=1024,                         # 1024 = 1.0x scale (uint16)
+)
+
+# Write modified ADT
+with open(r"C:\output\Azeroth_32_48.adt", "wb") as f:
+    f.write(adt_bytes)
+```
+
+#### 9c -- Combine with Terrain Modifications
+
+You can chain doodad/WMO insertion with the heightmap and texture changes from
+earlier steps. The functions operate on raw bytes, so pass the output of
+`create_adt()` directly:
+
+```python
+from world_builder.adt_composer import create_adt, add_doodad_to_adt, add_wmo_to_adt
+
+# Create a new ADT with modified terrain
+adt_bytes = create_adt(
+    tile_x=32, tile_y=48,
+    heightmap=modified_heightmap,
+    texture_paths=modified_textures,
+    area_id=5000,
+)
+
+# Place doodads on the new terrain
+adt_bytes = add_doodad_to_adt(
+    adt_bytes,
+    m2_path="World\\Doodads\\Trees\\PalmTree01.m2",
+    position=(-8900.0, -120.0, 85.0),
+    scale=1024,
+)
+
+# Place a WMO structure
+adt_bytes = add_wmo_to_adt(
+    adt_bytes,
+    wmo_path="World\\wmo\\Buildings\\Human_Farm.wmo",
+    position=(-8800.0, -100.0, 80.0),
+    rotation=(0.0, 0.0, 0.0),
+)
+```
+
+---
+
+### Step 10 -- Re-Pack into MPQ
 
 ```python
 from world_builder.mpq_packer import MPQPacker
@@ -506,7 +614,7 @@ print("Patch content at:", output)
 
 ---
 
-### Step 10 -- Batch Processing Multiple Tiles
+### Step 11 -- Batch Processing Multiple Tiles
 
 For large-scale scenery updates, process multiple tiles in a loop:
 

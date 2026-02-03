@@ -6,7 +6,7 @@
 | **Client-Side Files** | `GameObjectDisplayInfo.dbc` (only for custom models; existing models need no patch) |
 | **Server-Side Files** | SQL: `gameobject_template`, `gameobject` (spawns) |
 | **pywowlib APIs** | `SQLGenerator.add_gameobject_templates()`, `SQLGenerator.add_gameobject_spawns()`, `SQLGenerator.add_quests()`, `SQLGenerator.add_smartai()` |
-| **DBC APIs** | `dbc_injector.DBCInjector` (for `GameObjectDisplayInfo.dbc` custom visuals) |
+| **DBC APIs** | `register_gameobject_display()` (for `GameObjectDisplayInfo.dbc` custom visuals) |
 | **Estimated Time** | 15-30 minutes for basic objects; 30-60 minutes with custom visuals |
 
 ## Overview
@@ -371,73 +371,75 @@ The WotLK 3.3.5 layout (builds 3.0.1.8622 - 3.3.5.12340) has the following struc
 
 **Total:** 19 fields.
 
-### Using DBCInjector for Custom GameObjectDisplayInfo
+### Using register_gameobject_display() for Custom Models
 
-The pywowlib `DBCInjector` class can read and write DBC files at the binary level.
-While there is no dedicated `register_gameobject_display_info()` convenience function
-(unlike `register_area_trigger()`), you can use the low-level API directly.
+The pywowlib `register_gameobject_display()` convenience function injects a new record
+into `GameObjectDisplayInfo.dbc`. It handles ID allocation, string block management,
+and record packing automatically.
 
 ```python
-import struct
-from world_builder.dbc_injector import DBCInjector
+from world_builder import register_gameobject_display
 
-def register_gameobject_display(dbc_dir, model_path, display_id=None,
-                                 geo_box_min=(0, 0, 0),
-                                 geo_box_max=(1, 1, 1)):
-    """
-    Inject a custom GameObjectDisplayInfo.dbc record.
+# Register a custom gameobject display with auto-assigned ID
+display_id = register_gameobject_display(
+    dbc_dir=r'C:\WoW\Data\patch-4\DBFilesClient',
+    model_path="World\\Generic\\PassiveDoodads\\MyChest\\MyChest.m2",
+)
 
-    Args:
-        dbc_dir: Path to directory containing GameObjectDisplayInfo.dbc.
-        model_path: Path to the .m2 or .wmo model file (game-relative).
-        display_id: Specific ID or None for auto-assignment.
-        geo_box_min: Bounding box min corner (x, y, z).
-        geo_box_max: Bounding box max corner (x, y, z).
-
-    Returns:
-        int: The assigned display ID.
-    """
-    import os
-    filepath = os.path.join(dbc_dir, 'GameObjectDisplayInfo.dbc')
-    dbc = DBCInjector(filepath)
-
-    if display_id is None:
-        display_id = dbc.get_max_id() + 1
-
-    # Add model path string to string block
-    model_offset = dbc.add_string(model_path)
-
-    # Build the record (19 fields, 76 bytes)
-    buf = bytearray()
-
-    # Field 0: ID
-    buf += struct.pack('<I', display_id)
-
-    # Field 1: ModelName (string offset)
-    buf += struct.pack('<I', model_offset)
-
-    # Fields 2-11: Sound[10] (all zeros)
-    for _ in range(10):
-        buf += struct.pack('<I', 0)
-
-    # Fields 12-14: GeoBoxMin[3]
-    for v in geo_box_min:
-        buf += struct.pack('<f', v)
-
-    # Fields 15-17: GeoBoxMax[3]
-    for v in geo_box_max:
-        buf += struct.pack('<f', v)
-
-    # Field 18: ObjectEffectPackageID
-    buf += struct.pack('<I', 0)
-
-    assert len(buf) == 76, "Record size mismatch: expected 76, got {}".format(len(buf))
-
-    dbc.records.append(bytes(buf))
-    dbc.write(filepath)
-
-    return display_id
+# Register with explicit ID and bounding box
+display_id = register_gameobject_display(
+    dbc_dir=r'C:\WoW\Data\patch-4\DBFilesClient',
+    model_path="World\\Generic\\Human\\Passive Doodads\\Crates\\BrokenCrate01.wmo",
+    display_id=50001,
+    bounding_box=((-0.5, -0.5, 0.0), (0.5, 0.5, 1.0)),
+)
 ```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `dbc_dir` | str | (required) | Path to directory containing `GameObjectDisplayInfo.dbc`. |
+| `model_path` | str | (required) | Game-relative path to the `.m2` or `.wmo` model file. |
+| `display_id` | int or None | None | Specific display ID, or `None` for auto-assignment (max ID + 1). |
+| `bounding_box` | tuple or None | None | Optional `((min_x, min_y, min_z), (max_x, max_y, max_z))` bounding box. Defaults to all zeros if not provided. |
+
+**Returns:** `int` -- the assigned display ID.
+
+### Using the Display ID in a Gameobject Template
+
+The display ID returned by `register_gameobject_display()` feeds directly into the
+`display_id` field of `SQLGenerator.add_gameobject_templates()`:
+
+```python
+from world_builder import register_gameobject_display, SQLGenerator
+
+# 1. Register the custom model in GameObjectDisplayInfo.dbc
+display_id = register_gameobject_display(
+    dbc_dir=dbc_dir,
+    model_path="World\\Generic\\PassiveDoodads\\AncientChest\\AncientChest.m2",
+)
+
+# 2. Use the display ID in a gameobject template
+gen = SQLGenerator(start_entry=90500, map_id=0, zone_id=12)
+gen.add_gameobject_templates([
+    {
+        'entry': 90500,
+        'type': 3,                # CHEST
+        'display_id': display_id, # <-- from register_gameobject_display()
+        'name': 'Ancient Treasure Chest',
+        'cast_bar_caption': 'Opening',
+        'size': 1.0,
+        'data0': 0,
+        'data1': 90500,
+    },
+])
+```
+
+> **Note:** Most quest objects can reuse the thousands of existing display IDs that
+> ship with the game (see the table below). The `register_gameobject_display()`
+> function is mainly needed when you have a fully custom 3D model that does not
+> exist in the default client data.
 
 ### Finding Existing Display IDs
 

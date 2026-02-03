@@ -17,7 +17,8 @@ exterior zone for World of Warcraft WotLK 3.3.5a (build 12340) using the
   plateaus, volcanos, valleys, ridges, noise)
 - Everything packed into the correct **MPQ** directory structure
 - Server-side **SQL** for `instance_template` / `access_requirement`
-- Guidance on vmap/mmap extraction for collision and pathing
+- Server collision (vmap) and pathfinding (mmap) data via the
+  **vmap_generator** Python wrappers
 
 ---
 
@@ -834,20 +835,66 @@ VALUES
 ### Step 14 -- Collision and Pathing (vmap/mmap)
 
 The WoW client renders terrain from ADT files, but the server needs separate
-collision (vmap) and pathfinding (mmap) data.
+collision (vmap) and pathfinding (mmap) data. The `vmap_generator` module
+provides Python wrappers around the TrinityCore/CMaNGOS server tools.
 
-#### VMap Extraction
+> **Tool prerequisite**: The underlying executables (`vmap4extractor`,
+> `vmap4assembler`, `mmaps_generator`) must be available on your system PATH or
+> in a directory you specify via `tools_dir`. You can build them from source or
+> use the Docker image at `tools/extractors/Dockerfile` in the pywowlib repo.
+> If the tools are not found, all functions log a warning and return `None`
+> gracefully without failing the build pipeline.
+
+#### Generate All Server Data (Recommended)
+
+```python
+from world_builder.vmap_generator import generate_server_data
+
+# Generate vmaps + mmaps in one call
+result = generate_server_data(
+    wow_data_dir=r"C:\WoW335\Data",   # Path to WoW Data/ directory (with MPQs)
+    output_dir=r"C:\server\data",
+    map_name=MAP_NAME,                 # Optional: extract only this map (None=all)
+    map_id=MAP_ID,                     # Optional: generate mmaps for this map only
+    tools_dir=None,                    # Optional: directory containing the tools
+)
+
+print("vmaps:", result['vmaps_dir'])   # Path to vmaps/ or None if tools missing
+print("mmaps:", result['mmaps_dir'])   # Path to mmaps/ or None if tools missing
+```
+
+#### Generate Individually
+
+```python
+from world_builder.vmap_generator import generate_vmaps, generate_mmaps
+
+# Step 1: Extract and assemble vmaps
+vmaps_dir = generate_vmaps(
+    wow_data_dir=r"C:\WoW335\Data",    # WoW Data/ directory with MPQ files
+    output_dir=r"C:\server\data",
+    map_name=MAP_NAME,                  # Optional: specific map (None=all)
+    tools_dir=None,                     # Optional: path to tool directory
+)
+
+# Step 2: Generate mmaps (requires vmaps from step 1)
+if vmaps_dir:
+    mmaps_dir = generate_mmaps(
+        vmaps_dir=vmaps_dir,            # Output from generate_vmaps()
+        output_dir=r"C:\server\data",
+        map_id=MAP_ID,                  # Optional: specific map ID (None=all)
+        tools_dir=None,
+    )
+```
+
+#### Manual Approach (Without Python Wrappers)
+
+If you prefer to run the tools directly:
 
 1. Place your custom `patch-4.MPQ` in the WoW `Data/` directory
-2. Run the vmap extractor: `./vmap4extractor` from the server tools
+2. Run the vmap extractor: `./vmap4extractor`
 3. Run the vmap assembler: `./vmap4assembler`
-4. Copy the resulting `vmaps/` directory to your server
-
-#### MMap Generation
-
-1. After vmap extraction, run: `./mmaps_generator`
-2. This produces `mmaps/` directory with pathfinding meshes
-3. Copy to your server
+4. Run: `./mmaps_generator`
+5. Copy the resulting `vmaps/` and `mmaps/` directories to your server
 
 > **Note**: For a single custom ADT tile, vmap/mmap generation takes only a few
 > seconds. For large multi-tile zones it can take several minutes.

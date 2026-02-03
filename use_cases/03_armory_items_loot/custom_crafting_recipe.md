@@ -1,6 +1,6 @@
 # Custom Crafting Recipe
 
-**Complexity:** Expert | **Estimated Time:** 60-120 minutes | **Files Modified:** Spell.dbc, SkillLineAbility.dbc, optionally item_template SQL
+**Complexity:** Expert | **Estimated Time:** 60-120 minutes | **Files Modified:** Spell.dbc, SkillLineAbility.dbc, optionally item_template SQL | **Key APIs:** `world_builder.dbc_injector.register_spell`, `world_builder.dbc_injector.register_skill_line_ability`, `world_builder.dbc_injector.register_item`
 
 ## Overview
 
@@ -125,7 +125,7 @@ The Spell.dbc for WotLK 3.3.5a (builds 3.3.3.11685 - 3.3.5.12340) has approximat
 | 71 | Effect[0] | uint32 | 24 | SPELL_EFFECT_CREATE_ITEM |
 | 86 | EffectBasePoints[0] | int32 | 0 | Base points (0 for create item) |
 | 92 | ImplicitTargetA[0] | uint32 | 1 | TARGET_UNIT_CASTER |
-| 113 | EffectItemType[0] | uint32 | Output item ID | The item created by this spell |
+| 107 | EffectItemType[0] | uint32 | Output item ID | The item created by this spell |
 | 139 | SpellIconID | uint32 | Icon ID | FK to SpellIcon.dbc for recipe list icon |
 | 142-158 | Name_lang | locstring | Spell name | Recipe name shown in profession window |
 | 159-175 | NameSubtext_lang | locstring | Rank text | Optional: "Rank 2", etc. |
@@ -151,149 +151,115 @@ The Spell.dbc for WotLK 3.3.5a (builds 3.3.3.11685 - 3.3.5.12340) has approximat
 | SPELL_EFFECT_LEARN_SPELL | 36 | Teaches another spell (for recipe items) |
 | SPELL_EFFECT_TRADE_SKILL | 95 | Opens trade skill window (special) |
 
-### Python Code: Create a Craft Spell
+### Python Code: Create a Craft Spell (Recommended)
+
+The `register_spell()` convenience function supports all the fields needed for
+a crafting spell. A craft spell uses `SPELL_EFFECT_CREATE_ITEM` (effect type 24)
+as its first effect, with the output item ID in `effect_1_item_type`. Reagents
+and their counts are passed via `**kwargs` using the Spell.dbc field names.
+
+```python
+from world_builder import register_spell
+
+# Blacksmithing recipe: craft a custom epic sword
+craft_spell_id = register_spell(
+    dbc_dir='C:/wow335/DBFilesClient',
+    name='Stormforged Blade',
+    description='Creates a Stormforged Blade from Saronite, Eternal Earth, '
+                'Eternal Fire, and Titanium.',
+    # Trade spell attributes
+    attributes=0x00010010,       # TRADESPELL + IS_ABILITY
+    attributes_ex=0,
+    cast_time_index=51,          # 5 seconds
+    range_index=1,               # Self only
+    # Effect 0: Create the output item
+    effect_1=24,                 # SPELL_EFFECT_CREATE_ITEM
+    effect_1_base_points=0,      # Creates 1 item (quantity - 1)
+    effect_1_target_a=1,         # TARGET_UNIT_CASTER
+    effect_1_item_type=90001,    # Output item entry ID
+    spell_icon_id=135,           # Sword icon
+    # Reagents and counts via **kwargs (Spell.dbc field names)
+    Reagent0=36916, ReagentCount0=12,   # 12x Saronite Bar
+    Reagent1=35623, ReagentCount1=4,    # 4x Eternal Earth
+    Reagent2=36860, ReagentCount2=2,    # 2x Eternal Fire
+    Reagent3=37663, ReagentCount3=1,    # 1x Titanium Bar
+    # Additional field overrides
+    AttributesExB=0x20000000,    # NOT_IN_COMBAT_LOG
+    EquippedItemClass=0xFFFFFFFF,  # -1 as unsigned = no requirement
+)
+print("Registered craft spell:", craft_spell_id)
+```
+
+**`register_spell()` Parameters (key fields for crafting):**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `dbc_dir` | str | (required) | Path to directory containing Spell.dbc |
+| `name` | str | (required) | Recipe name shown in profession window |
+| `spell_id` | int/None | None | Specific ID, or None for auto (max_id + 1) |
+| `attributes` | int | 0 | Spell attributes (0x00010010 for tradespell) |
+| `cast_time_index` | int | 1 | FK to SpellCastTimes.dbc (51=5sec) |
+| `range_index` | int | 0 | FK to SpellRange.dbc (1=self) |
+| `effect_1` | int | 0 | Effect type (24 = CREATE_ITEM) |
+| `effect_1_base_points` | int | 0 | Output quantity minus 1 |
+| `effect_1_target_a` | int | 0 | Implicit target (1 = caster) |
+| `effect_1_item_type` | int | 0 | Output item entry ID |
+| `spell_icon_id` | int | 1 | FK to SpellIcon.dbc |
+| `description` | str/None | None | Tooltip description |
+| `**kwargs` | | | Additional fields: Reagent0-7, ReagentCount0-7, etc. |
+
+**Returns:** `int` -- the assigned spell ID.
+
+Reagent fields use the Spell.dbc column names from `_SPELL_FIELD_MAP`:
+`Reagent0` through `Reagent7` for material item IDs, and `ReagentCount0`
+through `ReagentCount7` for quantities.
+
+### Low-Level Alternative
+
+For full manual control over the ~234-field spell record, you can use
+`DBCInjector` directly:
 
 ```python
 import struct
 import os
 from world_builder.dbc_injector import DBCInjector, _pack_locstring
 
-def create_craft_spell(
-    dbc_dir,
-    spell_id,
-    name,
-    output_item_id,
-    reagents,
-    description='',
-    casting_time_index=16,     # 3 second cast
-    spell_icon_id=1,
-    output_quantity=1,
-):
-    """
-    Create a crafting spell in Spell.dbc for WotLK 3.3.5a.
+filepath = os.path.join('C:/wow335/DBFilesClient', 'Spell.dbc')
+dbc = DBCInjector(filepath)
+record_size = dbc.record_size
 
-    The spell uses SPELL_EFFECT_CREATE_ITEM to produce an output item
-    from reagent materials.
+name_off = dbc.add_string('Stormforged Blade')
+desc_off = dbc.add_string('Creates a Stormforged Blade.')
 
-    Args:
-        dbc_dir: Path to directory containing Spell.dbc.
-        spell_id: Unique spell ID for this recipe.
-        name: Recipe name shown in profession window.
-        output_item_id: Item entry ID to create when cast.
-        reagents: List of (item_id, count) tuples. Max 8 reagent types.
-                  Example: [(36916, 12), (35623, 4)] for
-                  12x Saronite Bar + 4x Eternal Earth.
-        description: Tooltip description (e.g., "Creates a Stormforged Blade.").
-        casting_time_index: FK to SpellCastTimes.dbc (16=3sec default).
-        spell_icon_id: SpellIcon.dbc ID for the recipe icon.
-        output_quantity: Number of items created per craft (usually 1).
+buf = bytearray(record_size)
 
-    Returns:
-        int: The spell_id that was injected.
-    """
-    filepath = os.path.join(dbc_dir, 'Spell.dbc')
-    dbc = DBCInjector(filepath)
+def set_u32(idx, val):
+    struct.pack_into('<I', buf, idx * 4, val)
 
-    # Validate reagents
-    if len(reagents) > 8:
-        raise ValueError("Maximum 8 reagent types per spell, got {}".format(
-            len(reagents)))
+def set_i32(idx, val):
+    struct.pack_into('<i', buf, idx * 4, val)
 
-    # Pad reagents to exactly 8
-    padded_reagents = list(reagents)[:8]
-    while len(padded_reagents) < 8:
-        padded_reagents.append((0, 0))
+def set_loc(start, off):
+    set_u32(start, off)
+    set_u32(start + 16, 0xFFFFFFFF)
 
-    # Get record size from loaded DBC
-    record_size = dbc.record_size
+set_u32(0, 99001)             # ID
+set_u32(4, 0x00010010)        # Attributes (TRADESPELL + IS_ABILITY)
+set_u32(6, 0x20000000)        # AttributesExB (NOT_IN_COMBAT_LOG)
+set_u32(28, 51)               # CastingTimeIndex (5 sec)
+set_u32(46, 1)                # RangeIndex (self)
+set_u32(52, 36916)            # Reagent[0] = Saronite Bar
+set_u32(60, 12)               # ReagentCount[0] = 12
+set_i32(68, -1)               # EquippedItemClass = -1
+set_u32(71, 24)               # Effect[0] = CREATE_ITEM
+set_u32(92, 1)                # ImplicitTargetA[0] = CASTER
+set_u32(107, 90001)           # EffectItemType[0] = output item
+set_u32(139, 135)             # SpellIconID
+set_loc(142, name_off)        # Name_lang
+set_loc(176, desc_off)        # Description_lang
 
-    # Add strings to string block
-    name_off = dbc.add_string(name)
-    desc_off = dbc.add_string(description)
-
-    # Build zero-filled record and patch critical fields
-    buf = bytearray(record_size)
-
-    def set_u32(field_idx, val):
-        struct.pack_into('<I', buf, field_idx * 4, val)
-
-    def set_i32(field_idx, val):
-        struct.pack_into('<i', buf, field_idx * 4, val)
-
-    def set_float(field_idx, val):
-        struct.pack_into('<f', buf, field_idx * 4, val)
-
-    def set_locstring(start_idx, string_off):
-        set_u32(start_idx, string_off)     # enUS slot
-        set_u32(start_idx + 16, 0xFFFFFFFF) # mask
-
-    # -- Core identity --
-    set_u32(0, spell_id)                   # ID
-
-    # -- Attributes --
-    # SPELL_ATTR0_TRADESPELL = 0x00010000
-    # Additional: SPELL_ATTR0_IS_ABILITY = 0x00000010 (optional)
-    set_u32(4, 0x00010010)                 # Attributes
-
-    # SPELL_ATTR2_NOT_IN_COMBAT_LOG = 0x20000000
-    set_u32(6, 0x20000000)                 # AttributesExB
-
-    # -- Cast configuration --
-    set_u32(28, casting_time_index)        # CastingTimeIndex
-    set_u32(35, 101)                       # ProcChance
-    set_u32(40, 0)                         # DurationIndex (0=instant result)
-    set_u32(41, 0)                         # PowerType (0=Mana)
-    set_u32(42, 0)                         # ManaCost (0)
-    set_u32(46, 1)                         # RangeIndex (1=Self)
-
-    # -- Reagents --
-    # Reagent[8]: fields 52-59
-    for i, (item_id, _count) in enumerate(padded_reagents):
-        set_u32(52 + i, item_id)
-
-    # ReagentCount[8]: fields 60-67
-    for i, (_item_id, count) in enumerate(padded_reagents):
-        set_u32(60 + i, count)
-
-    # -- Equipped item requirement --
-    set_i32(68, -1)                        # EquippedItemClass = -1 (none)
-
-    # -- Effect 0: CREATE_ITEM --
-    set_u32(71, 24)                        # Effect[0] = SPELL_EFFECT_CREATE_ITEM
-    set_u32(74, 1)                         # EffectDieSides[0] = 1
-    set_i32(86, output_quantity - 1)       # EffectBasePoints[0] (quantity - 1)
-    set_u32(92, 1)                         # ImplicitTargetA[0] = TARGET_UNIT_CASTER
-    set_u32(113, output_item_id)           # EffectItemType[0] = output item
-
-    # -- Visuals --
-    set_u32(139, spell_icon_id)            # SpellIconID
-
-    # -- Name and Description --
-    set_locstring(142, name_off)           # Name_lang
-    set_locstring(176, desc_off)           # Description_lang
-
-    dbc.records.append(bytes(buf))
-    dbc.write(filepath)
-
-    return spell_id
-
-
-# Example: Blacksmithing recipe for custom sword
-create_craft_spell(
-    dbc_dir='C:/wow335/DBFilesClient',
-    spell_id=99001,
-    name='Stormforged Blade',
-    output_item_id=90001,
-    reagents=[
-        (36916, 12),     # 12x Saronite Bar
-        (35623, 4),      # 4x Eternal Earth
-        (36860, 2),      # 2x Eternal Fire
-        (37663, 1),      # 1x Titanium Bar
-    ],
-    description='Teaches you how to craft a Stormforged Blade.',
-    casting_time_index=51,  # 5 seconds
-    spell_icon_id=135,      # Sword icon
-)
+dbc.records.append(bytes(buf))
+dbc.write(filepath)
 ```
 
 ### Important Notes on Spell Field Layout
@@ -356,98 +322,77 @@ The recipe color in the profession window indicates skill-up probability:
 
 The "midpoint" is calculated as: `(TrivialSkillLineRankLow + TrivialSkillLineRankHigh) / 2`
 
-### Python Code: Link Spell to Profession
+### Python Code: Link Spell to Profession (Recommended)
+
+The `register_skill_line_ability()` convenience function handles record
+construction, auto-ID assignment, and DBC file I/O in a single call:
+
+```python
+from world_builder import register_skill_line_ability
+
+# Link the craft spell to Blacksmithing
+# Requires 440 skill, turns yellow at 450, gray at 460
+ability_id = register_skill_line_ability(
+    dbc_dir='C:/wow335/DBFilesClient',
+    skill_line=164,          # Blacksmithing
+    spell_id=99001,          # Our custom craft spell
+    min_skill_rank=440,      # Requires 440 skill to learn/use
+    trivial_high=460,        # Turns gray at 460 (no more skill-ups)
+    trivial_low=450,         # Turns yellow at 450
+    acquire_method=1,        # Learned on skill value
+)
+print("Registered SkillLineAbility entry:", ability_id)
+```
+
+**`register_skill_line_ability()` Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `dbc_dir` | str | (required) | Path to directory containing SkillLineAbility.dbc |
+| `skill_line` | int | (required) | SkillLine.dbc ID (e.g. 164=Blacksmithing, 333=Enchanting) |
+| `spell_id` | int | (required) | Spell.dbc ID to associate with this skill line |
+| `ability_id` | int/None | None | Specific row ID, or None for auto (max_id + 1) |
+| `race_mask` | int | 0 | Allowed race bitmask (0 = all races) |
+| `class_mask` | int | 0 | Allowed class bitmask (0 = all classes) |
+| `min_skill_rank` | int | 0 | Minimum skill rank required to learn |
+| `superceded_by` | int | 0 | Spell ID that replaces this at higher rank (0 = none) |
+| `acquire_method` | int | 1 | 1=learned on skill, 2=learned at trainer |
+| `trivial_high` | int | 0 | Skill rank where this goes grey (0 = never) |
+| `trivial_low` | int | 0 | Minimum skill rank threshold (0 = none) |
+
+**Returns:** `int` -- the assigned ability ID.
+
+### Low-Level Alternative
+
+For manual control over the 56-byte binary record:
 
 ```python
 import struct
 import os
 from world_builder.dbc_injector import DBCInjector
 
-def create_skill_line_ability(
-    dbc_dir,
-    skill_line_id,
-    spell_id,
-    min_skill_rank,
-    trivial_high,
-    trivial_low=None,
-    acquire_method=0,
-    race_mask=0,
-    class_mask=0,
-    superceded_by=0,
-    sla_id=None,
-):
-    """
-    Create a new SkillLineAbility.dbc record linking a spell to a profession.
+filepath = os.path.join('C:/wow335/DBFilesClient', 'SkillLineAbility.dbc')
+dbc = DBCInjector(filepath)
+sla_id = dbc.get_max_id() + 1
 
-    Args:
-        dbc_dir: Path to directory containing SkillLineAbility.dbc.
-        skill_line_id: SkillLine.dbc ID for the profession
-                       (e.g., 164=Blacksmithing, 197=Tailoring).
-        spell_id: Spell.dbc ID for the craft spell.
-        min_skill_rank: Minimum profession skill to learn/use this recipe.
-        trivial_high: Skill level where recipe turns gray (no more skill-ups).
-        trivial_low: Skill level where recipe turns yellow. If None,
-                     defaults to min_skill_rank + 10.
-        acquire_method: How recipe is learned:
-                        0=Available on train, 1=Auto at skill level,
-                        2=From trainer/recipe.
-        race_mask: Race restriction (0=all).
-        class_mask: Class restriction (0=all).
-        superceded_by: Spell ID of higher-rank version (0=none).
-        sla_id: Explicit entry ID (None=auto from max_id+1).
+buf = bytearray()
+buf += struct.pack('<I', sla_id)       # ID
+buf += struct.pack('<I', 164)          # SkillLine = Blacksmithing
+buf += struct.pack('<I', 99001)        # Spell
+buf += struct.pack('<I', 0)            # RaceMask (all)
+buf += struct.pack('<I', 0)            # ClassMask (all)
+buf += struct.pack('<I', 0)            # ExcludeRace
+buf += struct.pack('<I', 0)            # ExcludeClass
+buf += struct.pack('<I', 440)          # MinSkillLineRank
+buf += struct.pack('<I', 0)            # SupercededBySpell
+buf += struct.pack('<I', 1)            # AcquireMethod
+buf += struct.pack('<I', 460)          # TrivialSkillLineRankHigh (gray)
+buf += struct.pack('<I', 450)          # TrivialSkillLineRankLow (yellow)
+buf += struct.pack('<II', 0, 0)        # CharacterPoints[2]
 
-    Returns:
-        int: The SkillLineAbility entry ID.
-    """
-    filepath = os.path.join(dbc_dir, 'SkillLineAbility.dbc')
-    dbc = DBCInjector(filepath)
-
-    if sla_id is None:
-        sla_id = dbc.get_max_id() + 1
-
-    if trivial_low is None:
-        trivial_low = min_skill_rank + 10
-
-    # Build 56-byte record (14 fields)
-    buf = bytearray()
-
-    buf += struct.pack('<I', sla_id)          # 0: ID
-    buf += struct.pack('<I', skill_line_id)   # 1: SkillLine
-    buf += struct.pack('<I', spell_id)        # 2: Spell
-    buf += struct.pack('<I', race_mask)       # 3: RaceMask
-    buf += struct.pack('<I', class_mask)      # 4: ClassMask
-    buf += struct.pack('<I', 0)               # 5: ExcludeRace
-    buf += struct.pack('<I', 0)               # 6: ExcludeClass
-    buf += struct.pack('<I', min_skill_rank)  # 7: MinSkillLineRank
-    buf += struct.pack('<I', superceded_by)   # 8: SupercededBySpell
-    buf += struct.pack('<I', acquire_method)  # 9: AcquireMethod
-    buf += struct.pack('<I', trivial_high)    # 10: TrivialSkillLineRankHigh
-    buf += struct.pack('<I', trivial_low)     # 11: TrivialSkillLineRankLow
-    buf += struct.pack('<II', 0, 0)           # 12-13: CharacterPoints[2]
-
-    expected_size = 14 * 4  # 56 bytes
-    assert len(buf) == expected_size, (
-        "SkillLineAbility record size mismatch: expected {}, got {}".format(
-            expected_size, len(buf))
-    )
-
-    dbc.records.append(bytes(buf))
-    dbc.write(filepath)
-
-    return sla_id
-
-
-# Example: Add Blacksmithing recipe
-# Requires 440 Blacksmithing, yellow at 450, gray at 460
-create_skill_line_ability(
-    dbc_dir='C:/wow335/DBFilesClient',
-    skill_line_id=164,       # Blacksmithing
-    spell_id=99001,          # Our custom craft spell
-    min_skill_rank=440,      # Requires 440 skill
-    trivial_low=450,         # Turns yellow at 450
-    trivial_high=460,        # Turns gray at 460
-    acquire_method=0,        # Available when trained at skill level
-)
+assert len(buf) == 56
+dbc.records.append(bytes(buf))
+dbc.write(filepath)
 ```
 
 ### Typical Skill Threshold Patterns
@@ -548,35 +493,30 @@ gen.write_sql('output/recipe_item.sql')
 
 ## Step 5: Complete Working Example
 
-This example creates a complete Blacksmithing recipe chain: craft spell, profession linkage, recipe item, and the output item.
+This example creates a complete Blacksmithing recipe chain using the convenience
+APIs: craft spell, profession linkage, recipe item, and the output item.
 
 ```python
 """
 Complete example: Blacksmithing recipe for a custom epic 1H sword.
 
 Creates:
-1. Craft spell in Spell.dbc (SPELL_EFFECT_CREATE_ITEM)
-2. SkillLineAbility.dbc entry linking spell to Blacksmithing
-3. Recipe item (Plans: Stormforged Blade)
-4. Output item SQL (if not already created)
+1. Output item in Item.dbc via register_item()
+2. Craft spell in Spell.dbc via register_spell()
+3. SkillLineAbility.dbc entry via register_skill_line_ability()
+4. Recipe item SQL via SQLGenerator
 
 Prerequisites:
-- Output item (entry 90001) must exist in Item.dbc + item_template
-  (see add_new_item.md)
-- Extracted Spell.dbc and SkillLineAbility.dbc in DBC_DIR
+- Extracted DBC files in DBC_DIR
+- pywowlib on Python path
 """
-import struct
 import os
-from world_builder.dbc_injector import DBCInjector, _pack_locstring
+from world_builder import register_item, register_spell, register_skill_line_ability
 from world_builder.sql_generator import SQLGenerator
 
 # Configuration
 DBC_DIR = 'C:/wow335/DBFilesClient'
 SQL_OUTPUT = 'output/blacksmithing_recipe.sql'
-
-CRAFT_SPELL_ID = 99001
-OUTPUT_ITEM_ID = 90001    # Must already exist (see add_new_item.md)
-RECIPE_ITEM_ID = 90900
 
 # Reagent materials (existing Blizzard item IDs)
 REAGENTS = [
@@ -587,118 +527,69 @@ REAGENTS = [
 ]
 
 # ================================================================
-# Step 1: Create Craft Spell in Spell.dbc
+# Step 1: Register output item in Item.dbc
 # ================================================================
-spell_path = os.path.join(DBC_DIR, 'Spell.dbc')
-spell_dbc = DBCInjector(spell_path)
-
-record_size = spell_dbc.record_size
-print("Spell.dbc record size: {} bytes ({} fields)".format(
-    record_size, record_size // 4))
-
-# Add strings
-spell_name_off = spell_dbc.add_string('Stormforged Blade')
-spell_desc_off = spell_dbc.add_string(
-    'Creates a Stormforged Blade from Saronite, Eternal Earth, '
-    'Eternal Fire, and Titanium.'
+# (Skip this if the item already exists -- see add_new_item.md)
+OUTPUT_ITEM_ID = register_item(
+    dbc_dir=DBC_DIR,
+    item_id=90001,
+    class_id=2,               # Weapon
+    subclass_id=7,            # Sword (1H)
+    material=1,               # Metal
+    display_info_id=80001,    # Custom or reused display
+    inventory_type=13,        # INVTYPE_WEAPON (one-hand)
+    sheathe_type=3,           # Left hip
 )
-
-# Build record
-spell_buf = bytearray(record_size)
-
-def sp_u32(idx, val):
-    struct.pack_into('<I', spell_buf, idx * 4, val)
-
-def sp_i32(idx, val):
-    struct.pack_into('<i', spell_buf, idx * 4, val)
-
-def sp_loc(start, off):
-    sp_u32(start, off)
-    sp_u32(start + 16, 0xFFFFFFFF)
-
-# Identity
-sp_u32(0, CRAFT_SPELL_ID)
-
-# Attributes (trade spell, cannot be used in combat)
-sp_u32(4, 0x00010010)    # TRADESPELL + IS_ABILITY
-sp_u32(6, 0x20000000)    # NOT_IN_COMBAT_LOG
-
-# Cast time: 5 seconds
-sp_u32(28, 51)           # CastingTimeIndex = 51 (5000ms)
-
-# Proc
-sp_u32(35, 101)
-
-# Duration: instant result
-sp_u32(40, 0)
-
-# No mana cost
-sp_u32(41, 0)            # PowerType = Mana
-sp_u32(42, 0)            # ManaCost = 0
-
-# Self-only range
-sp_u32(46, 1)            # RangeIndex = 1
-
-# Reagents
-for i, (item_id, count) in enumerate(REAGENTS):
-    sp_u32(52 + i, item_id)     # Reagent[i]
-    sp_u32(60 + i, count)       # ReagentCount[i]
-
-# No equipped item requirement
-sp_i32(68, -1)
-
-# Effect 0: Create Item
-sp_u32(71, 24)                  # Effect[0] = SPELL_EFFECT_CREATE_ITEM
-sp_u32(74, 1)                  # EffectDieSides[0] = 1
-sp_i32(86, 0)                  # EffectBasePoints[0] = 0 (creates 1 item)
-sp_u32(92, 1)                  # ImplicitTargetA[0] = CASTER
-sp_u32(113, OUTPUT_ITEM_ID)    # EffectItemType[0] = output item
-
-# Icon (use a sword icon)
-sp_u32(139, 135)               # SpellIconID
-
-# Text
-sp_loc(142, spell_name_off)    # Name_lang
-sp_loc(176, spell_desc_off)    # Description_lang
-
-spell_dbc.records.append(bytes(spell_buf))
-spell_dbc.write(spell_path)
-print("[OK] Spell.dbc: added craft spell {} ('{}')".format(
-    CRAFT_SPELL_ID, 'Stormforged Blade'))
+print("[OK] Item.dbc: registered output item {}".format(OUTPUT_ITEM_ID))
 
 # ================================================================
-# Step 2: Link to Blacksmithing via SkillLineAbility.dbc
+# Step 2: Create craft spell via register_spell()
 # ================================================================
-sla_path = os.path.join(DBC_DIR, 'SkillLineAbility.dbc')
-sla_dbc = DBCInjector(sla_path)
+CRAFT_SPELL_ID = register_spell(
+    dbc_dir=DBC_DIR,
+    name='Stormforged Blade',
+    description='Creates a Stormforged Blade from Saronite, Eternal Earth, '
+                'Eternal Fire, and Titanium.',
+    # Trade spell attributes
+    attributes=0x00010010,       # TRADESPELL + IS_ABILITY
+    cast_time_index=51,          # 5 seconds
+    range_index=1,               # Self only
+    # Effect 0: Create the output item
+    effect_1=24,                 # SPELL_EFFECT_CREATE_ITEM
+    effect_1_base_points=0,      # Creates 1 item
+    effect_1_target_a=1,         # TARGET_UNIT_CASTER
+    effect_1_item_type=OUTPUT_ITEM_ID,
+    spell_icon_id=135,           # Sword icon
+    # Reagents via **kwargs
+    Reagent0=36916, ReagentCount0=12,   # 12x Saronite Bar
+    Reagent1=35623, ReagentCount1=4,    # 4x Eternal Earth
+    Reagent2=36860, ReagentCount2=2,    # 2x Eternal Fire
+    Reagent3=37663, ReagentCount3=1,    # 1x Titanium Bar
+    # Extra attributes
+    AttributesExB=0x20000000,    # NOT_IN_COMBAT_LOG
+    EquippedItemClass=0xFFFFFFFF,  # -1 as unsigned (no item requirement)
+)
+print("[OK] Spell.dbc: registered craft spell {}".format(CRAFT_SPELL_ID))
 
-sla_id = sla_dbc.get_max_id() + 1
-
-sla_buf = bytearray()
-sla_buf += struct.pack('<I', sla_id)       # ID
-sla_buf += struct.pack('<I', 164)          # SkillLine = Blacksmithing
-sla_buf += struct.pack('<I', CRAFT_SPELL_ID)  # Spell
-sla_buf += struct.pack('<I', 0)            # RaceMask (all)
-sla_buf += struct.pack('<I', 0)            # ClassMask (all)
-sla_buf += struct.pack('<I', 0)            # ExcludeRace
-sla_buf += struct.pack('<I', 0)            # ExcludeClass
-sla_buf += struct.pack('<I', 440)          # MinSkillLineRank = 440
-sla_buf += struct.pack('<I', 0)            # SupercededBySpell
-sla_buf += struct.pack('<I', 0)            # AcquireMethod = on train
-sla_buf += struct.pack('<I', 460)          # TrivialSkillLineRankHigh (gray)
-sla_buf += struct.pack('<I', 450)          # TrivialSkillLineRankLow (yellow)
-sla_buf += struct.pack('<II', 0, 0)        # CharacterPoints[2]
-
-assert len(sla_buf) == 56, "Expected 56, got {}".format(len(sla_buf))
-
-sla_dbc.records.append(bytes(sla_buf))
-sla_dbc.write(sla_path)
+# ================================================================
+# Step 3: Link to Blacksmithing via register_skill_line_ability()
+# ================================================================
+SLA_ID = register_skill_line_ability(
+    dbc_dir=DBC_DIR,
+    skill_line=164,              # Blacksmithing
+    spell_id=CRAFT_SPELL_ID,
+    min_skill_rank=440,          # Requires 440 skill
+    trivial_high=460,            # Gray at 460
+    trivial_low=450,             # Yellow at 450
+    acquire_method=1,            # Learned on skill value
+)
 print("[OK] SkillLineAbility.dbc: linked spell {} to Blacksmithing (ID={})".format(
-    CRAFT_SPELL_ID, sla_id))
+    CRAFT_SPELL_ID, SLA_ID))
 
 # ================================================================
-# Step 3: Generate Recipe Item SQL
+# Step 4: Generate Recipe Item SQL
 # ================================================================
+RECIPE_ITEM_ID = 90900
 gen = SQLGenerator(start_entry=90900)
 
 gen.add_items([{
@@ -748,7 +639,7 @@ print("  Recipe Item: {} (Plans: Stormforged Blade)".format(RECIPE_ITEM_ID))
 print("  Skill thresholds: Orange <440, Yellow 450, Gray 460")
 print()
 print("Next steps:")
-print("  1. Pack modified Spell.dbc and SkillLineAbility.dbc into patch MPQ")
+print("  1. Pack modified DBC files into patch MPQ")
 print("  2. Apply recipe SQL to acore_world database")
 print("  3. (Optional) Add recipe item to vendor or loot table")
 print("  4. Restart worldserver and clear client cache (Cache/WDB/*)")
@@ -783,7 +674,7 @@ print("  5. Test: Learn Blacksmithing 440+, open profession, verify recipe")
 **Cause:** `EffectItemType[0]` in Spell.dbc does not point to a valid item, or `Effect[0]` is not set to 24 (CREATE_ITEM).
 
 **Fix:**
-- Verify `EffectItemType[0]` (field index 113) equals the output item's entry ID
+- Verify `EffectItemType[0]` (field index 107) equals the output item's entry ID
 - Verify `Effect[0]` (field index 71) is set to 24
 - Ensure the output item exists in both `Item.dbc` and `item_template` SQL
 - Check that `ImplicitTargetA[0]` is 1 (TARGET_UNIT_CASTER)
@@ -886,6 +777,9 @@ print("  5. Test: Learn Blacksmithing 440+, open profession, verify recipe")
 - **[Create Item Set](create_item_set.md)** -- If crafted items are part of a set
 - **[Modify Loot Tables](modify_loot_tables.md)** -- Add recipe items to boss/chest loot tables
 - **pywowlib API Reference:**
-  - `world_builder.dbc_injector.DBCInjector` -- Low-level DBC read/write for Spell.dbc and SkillLineAbility.dbc
+  - `world_builder.dbc_injector.register_spell()` -- Convenience wrapper for Spell.dbc record creation (auto-ID, named parameters for all 3 effect slots, `**kwargs` for any field)
+  - `world_builder.dbc_injector.register_skill_line_ability()` -- Convenience wrapper for SkillLineAbility.dbc record creation (auto-ID, 14 fields / 56 bytes)
+  - `world_builder.dbc_injector.register_item()` -- Convenience wrapper for Item.dbc record creation (auto-ID, 8 fields / 32 bytes)
+  - `world_builder.dbc_injector.DBCInjector` -- Low-level DBC read/write for manual record construction
   - `world_builder.dbc_injector._pack_locstring()` -- WotLK localized string helper
   - `world_builder.sql_generator.SQLGenerator.add_items()` -- Recipe item SQL generation
