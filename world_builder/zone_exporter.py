@@ -37,8 +37,10 @@ from .wdt_generator import read_wdt
 from .adt_composer import read_adt
 from .dungeon_builder import read_dungeon
 from .dbc_injector import DBCInjector
-from .intermediate_format import (slugify, save_json, FORMAT_VERSION,
-                                  TileImageWriter, WMOGltfWriter)
+from .intermediate_format import (slugify, save_json, load_json,
+                                  FORMAT_VERSION,
+                                  TileImageWriter, WMOGltfWriter,
+                                  MPQChain, blp_to_png)
 
 try:
     from ..adt_file import ADTFile
@@ -61,7 +63,8 @@ class ZoneExporter(object):
     in full fidelity.
     """
 
-    def __init__(self, game_data_dir, dbc_dir, output_base="exports"):
+    def __init__(self, game_data_dir, dbc_dir, output_base="exports",
+                 wow_root=None):
         """
         Initialize the zone exporter.
 
@@ -69,10 +72,15 @@ class ZoneExporter(object):
             game_data_dir: Root of extracted game files (contains World/Maps/...).
             dbc_dir: Path to DBFilesClient directory containing DBC files.
             output_base: Base directory for exports (e.g. "exports").
+            wow_root: Optional path to WoW installation root (contains Data/
+                with MPQ archives).  When set, BLP textures referenced by the
+                export are extracted from MPQ archives and saved as PNG images
+                alongside the export.
         """
         self.game_data_dir = game_data_dir
         self.dbc_dir = dbc_dir
         self.output_base = output_base
+        self.wow_root = wow_root
 
     # ------------------------------------------------------------------
     # Public API
@@ -168,6 +176,12 @@ class ZoneExporter(object):
                 log.info("Exported tile (%d, %d)", x, y)
             except Exception as e:
                 log.warning("Failed to export tile (%d, %d): %s", x, y, e)
+
+        # Extract referenced images from MPQ archives (optional)
+        if self.wow_root:
+            image_paths = self._collect_zone_image_paths(
+                output_dir, map_record, tiles_list)
+            self._extract_images(output_dir, image_paths, files_dict)
 
         # Write manifest
         manifest = {
@@ -290,6 +304,12 @@ class ZoneExporter(object):
                                     x, y, e)
             except Exception as e:
                 log.warning("Failed to read dungeon WDT %s: %s", wdt_path, e)
+
+        # Extract referenced images from MPQ archives (optional)
+        if self.wow_root:
+            image_paths = self._collect_zone_image_paths(
+                output_dir, map_record, tiles_list)
+            self._extract_images(output_dir, image_paths, files_dict)
 
         # Write manifest
         manifest = {
@@ -891,6 +911,296 @@ class ZoneExporter(object):
         return result
 
     # ------------------------------------------------------------------
+    # Image extraction from MPQ archives
+    # ------------------------------------------------------------------
+
+    def _collect_zone_image_paths(self, output_dir, map_record, tiles_list):
+        """Collect all referenced BLP paths grouped by category.
+
+        Scans exported tile meta.json files and DBC records to build a
+        dict of ``{category: [(mpq_path, local_rel_path), ...]}``.
+
+        Args:
+            output_dir: Export output directory.
+            map_record: Decoded Map.dbc record dict (or None).
+            tiles_list: List of tile dicts with x, y, file keys.
+
+        Returns:
+            dict: Mapping of category name to list of (mpq_path, local_path)
+                tuples.
+        """
+        result = {
+            "textures": [],
+            "loading_screen": [],
+            "world_map": [],
+            "overlays": [],
+            "minimap": [],
+        }
+
+        # --- Ground textures from tile meta.json ---
+        seen_textures = set()
+        for tile_ref in tiles_list:
+            meta_path = os.path.join(
+                output_dir, tile_ref["file"], "meta.json")
+            if not os.path.isfile(meta_path):
+                continue
+            try:
+                meta = load_json(meta_path)
+            except Exception:
+                continue
+            for tex_path in meta.get("textures", []):
+                tex_lower = tex_path.lower()
+                if tex_lower in seen_textures:
+                    continue
+                seen_textures.add(tex_lower)
+                # Local path: keep subfolder structure, normalise to forward slash
+                tex_rel = tex_path.replace('\\', '/').replace('.blp', '.png')
+                local = "images/textures/{}".format(tex_rel)
+                result["textures"].append((tex_path, local))
+
+        # --- Loading screen from LoadingScreens.dbc ---
+        if map_record and map_record.get("loading_screen_id"):
+            ls_id = map_record["loading_screen_id"]
+            ls_path = os.path.join(self.dbc_dir, "LoadingScreens.dbc")
+            if os.path.isfile(ls_path):
+                try:
+                    ls_dbc = DBCInjector(ls_path)
+                    for rec_idx in range(ls_dbc.record_count):
+                        rec_id = ls_dbc.get_record_field(rec_idx, 0, '<I')
+                        if rec_id != ls_id:
+                            continue
+                        fn_offset = ls_dbc.get_record_field(rec_idx, 2, '<I')
+                        has_wide = ls_dbc.get_record_field(rec_idx, 3, '<I')
+                        blp_path = ls_dbc.get_string(fn_offset)
+                        if blp_path:
+                            # Normal loading screen
+                            mpq_path = blp_path
+                            if not mpq_path.lower().endswith('.blp'):
+                                mpq_path += '.blp'
+                            result["loading_screen"].append(
+                                (mpq_path, "images/loading_screen.png"))
+                            # Widescreen variant
+                            if has_wide:
+                                wide_mpq = mpq_path.replace(
+                                    '.blp', 'Wide.blp').replace(
+                                    '.BLP', 'Wide.BLP')
+                                result["loading_screen"].append(
+                                    (wide_mpq,
+                                     "images/loading_screen_wide.png"))
+                        break
+                except Exception as e:
+                    log.warning("Failed reading LoadingScreens.dbc for "
+                                "image paths: %s", e)
+
+        # --- World map tiles from WorldMapArea.dbc ---
+        wma_path = os.path.join(self.dbc_dir, "WorldMapArea.dbc")
+        if os.path.isfile(wma_path) and map_record:
+            try:
+                wma_dbc = DBCInjector(wma_path)
+                map_id = map_record["id"]
+                for rec_idx in range(wma_dbc.record_count):
+                    rec_map_id = wma_dbc.get_record_field(rec_idx, 1, '<I')
+                    if rec_map_id != map_id:
+                        continue
+                    name_offset = wma_dbc.get_record_field(rec_idx, 3, '<I')
+                    area_name = wma_dbc.get_string(name_offset)
+                    if not area_name:
+                        continue
+                    # World map tiles follow convention: {Name}{1-12}.blp
+                    for i in range(1, 13):
+                        mpq_path = "Interface\\WorldMap\\{}\\{}{}.blp".format(
+                            area_name, area_name, i)
+                        local = "images/world_map/{}.png".format(i)
+                        result["world_map"].append((mpq_path, local))
+            except Exception as e:
+                log.warning("Failed reading WorldMapArea.dbc for image "
+                            "paths: %s", e)
+
+        # --- World map overlays from world_map.json ---
+        wm_json_path = os.path.join(output_dir, "world_map.json")
+        if os.path.isfile(wm_json_path):
+            try:
+                wm_data = load_json(wm_json_path)
+                for overlay in wm_data.get("world_map_overlays", []):
+                    tex_name = overlay.get("texture_name", "")
+                    if not tex_name:
+                        continue
+                    mpq_path = tex_name
+                    if not mpq_path.lower().endswith('.blp'):
+                        mpq_path += '.blp'
+                    # Use last path component as local filename
+                    base = tex_name.replace('\\', '/').split('/')[-1]
+                    base = base.replace('.blp', '').replace('.BLP', '')
+                    local = "images/overlays/{}.png".format(base)
+                    result["overlays"].append((mpq_path, local))
+            except Exception as e:
+                log.warning("Failed reading world_map.json for overlay "
+                            "image paths: %s", e)
+
+        # --- Minimap tiles from md5translate.trs ---
+        if map_record:
+            map_dir_name = map_record.get("directory", "")
+            if map_dir_name:
+                self._collect_minimap_paths(
+                    result, map_dir_name, tiles_list)
+
+        return result
+
+    def _collect_minimap_paths(self, result, map_dir_name, tiles_list):
+        """Parse md5translate.trs from MPQ and collect minimap tile paths.
+
+        Args:
+            result: Image paths dict to append minimap entries to.
+            map_dir_name: Map directory name (e.g. "PVPZone05").
+            tiles_list: List of active tile dicts with x, y keys.
+        """
+        if not self.wow_root:
+            return
+
+        try:
+            chain = MPQChain(self.wow_root)
+        except Exception as e:
+            log.warning("Failed to open MPQ chain for minimap lookup: %s", e)
+            return
+
+        try:
+            trs_data = chain.read_file("textures\\Minimap\\md5translate.trs")
+            if not trs_data:
+                log.debug("md5translate.trs not found in MPQ archives")
+                return
+
+            # Build set of active tile coords for quick lookup
+            active_coords = set()
+            for tile_ref in tiles_list:
+                active_coords.add((tile_ref["x"], tile_ref["y"]))
+
+            # Parse TRS: each line is "MapDir\mapXX_YY.blp\thash.blp"
+            # Also contains "dir: MapDir" lines which we skip.
+            trs_text = trs_data.decode('utf-8', errors='replace')
+            map_prefix = "{}\\".format(map_dir_name).lower()
+
+            for line in trs_text.splitlines():
+                line = line.strip()
+                if not line or line.startswith('dir:'):
+                    continue
+                parts = line.split('\t')
+                if len(parts) < 2:
+                    continue
+
+                entry_path = parts[0].strip()
+                hash_filename = parts[1].strip()
+
+                if not entry_path.lower().startswith(map_prefix):
+                    continue
+
+                # Extract coords from filename like "map25_23.blp"
+                filename = entry_path.split('\\')[-1]
+                name_lower = filename.lower()
+                if not name_lower.startswith('map') or not name_lower.endswith('.blp'):
+                    continue
+                coord_part = name_lower[3:-4]  # strip "map" and ".blp"
+                if '_' not in coord_part:
+                    continue
+                try:
+                    cx_str, cy_str = coord_part.split('_', 1)
+                    cx, cy = int(cx_str), int(cy_str)
+                except (ValueError, IndexError):
+                    continue
+
+                if (cx, cy) not in active_coords:
+                    continue
+
+                # hash_filename is already like "abc123.blp"
+                mpq_path = "textures\\Minimap\\{}".format(hash_filename)
+                local = "images/minimap/{}_{}.png".format(cx, cy)
+                result["minimap"].append((mpq_path, local))
+        finally:
+            chain.close()
+
+    def _extract_images(self, output_dir, image_paths, files_dict):
+        """Extract BLP images from MPQ archives and convert to PNG.
+
+        Args:
+            output_dir: Export output directory.
+            image_paths: Dict from _collect_zone_image_paths().
+            files_dict: Manifest files dict to update with image references.
+        """
+        # Count total images to extract
+        total = sum(len(paths) for paths in image_paths.values())
+        if total == 0:
+            log.info("No image paths collected, skipping extraction")
+            return
+
+        log.info("Extracting %d images from MPQ archives...", total)
+
+        try:
+            chain = MPQChain(self.wow_root)
+        except Exception as e:
+            log.warning("Failed to open MPQ chain for image extraction: %s",
+                        e)
+            return
+
+        images_manifest = {}
+        extracted = 0
+        missing = 0
+
+        try:
+            for category, paths in image_paths.items():
+                if not paths:
+                    continue
+
+                category_files = []
+                for mpq_path, local_path in paths:
+                    blp_data = chain.read_file(mpq_path)
+                    if blp_data is None:
+                        log.debug("Image not found in MPQ: %s", mpq_path)
+                        missing += 1
+                        continue
+
+                    out_path = os.path.join(output_dir, local_path)
+                    try:
+                        # Loading screens are stored as square BLP
+                        # textures but displayed at 4:3 (normal) or
+                        # 16:10 (widescreen).  The game maps the
+                        # texture width to screen width and scales
+                        # height down to the correct aspect ratio.
+                        display_size = None
+                        if category == "loading_screen":
+                            blp_w = struct.unpack_from('<I', blp_data, 12)[0]
+                            is_wide = "wide" in local_path.lower()
+                            if is_wide:
+                                display_size = (blp_w, blp_w * 10 // 16)
+                            else:
+                                display_size = (blp_w, blp_w * 3 // 4)
+                        blp_to_png(blp_data, out_path,
+                                   display_size=display_size)
+                        category_files.append(local_path)
+                        extracted += 1
+                    except Exception as e:
+                        log.warning("Failed to convert %s: %s", mpq_path, e)
+                        missing += 1
+
+                # Build manifest entry per category
+                if category_files:
+                    if category == "loading_screen":
+                        # Loading screens are individual named files
+                        for f in category_files:
+                            if "wide" in f:
+                                images_manifest["loading_screen_wide"] = f
+                            else:
+                                images_manifest["loading_screen"] = f
+                    else:
+                        images_manifest[category] = category_files
+        finally:
+            chain.close()
+
+        if images_manifest:
+            files_dict["images"] = images_manifest
+
+        log.info("Image extraction complete: %d extracted, %d missing",
+                 extracted, missing)
+
+    # ------------------------------------------------------------------
     # ADT tile export
     # ------------------------------------------------------------------
 
@@ -1204,7 +1514,7 @@ class ZoneExporter(object):
 # ---------------------------------------------------------------------------
 
 def export_zone(game_data_dir, dbc_dir, map_name, map_id,
-                output_base="exports"):
+                output_base="exports", wow_root=None):
     """
     Export a zone from binary game files to intermediate format.
 
@@ -1216,16 +1526,19 @@ def export_zone(game_data_dir, dbc_dir, map_name, map_id,
         map_name: Internal map directory name.
         map_id: Numeric map ID.
         output_base: Base directory for exports.
+        wow_root: Optional WoW installation root for image extraction.
 
     Returns:
         str: Path to the generated manifest.json, or None on failure.
     """
-    exporter = ZoneExporter(game_data_dir, dbc_dir, output_base)
+    exporter = ZoneExporter(game_data_dir, dbc_dir, output_base,
+                            wow_root=wow_root)
     return exporter.export_zone(map_name, map_id)
 
 
 def export_dungeon(game_data_dir, dbc_dir, map_name, map_id,
-                   wmo_path=None, wmo_paths=None, output_base="exports"):
+                   wmo_path=None, wmo_paths=None, output_base="exports",
+                   wow_root=None):
     """
     Export a dungeon from binary game files to intermediate format.
 
@@ -1239,9 +1552,11 @@ def export_dungeon(game_data_dir, dbc_dir, map_name, map_id,
         wmo_path: Optional path to a single WMO root file.
         wmo_paths: Optional list of paths to multiple WMO root files.
         output_base: Base directory for exports.
+        wow_root: Optional WoW installation root for image extraction.
 
     Returns:
         str: Path to the generated manifest.json, or None on failure.
     """
-    exporter = ZoneExporter(game_data_dir, dbc_dir, output_base)
+    exporter = ZoneExporter(game_data_dir, dbc_dir, output_base,
+                            wow_root=wow_root)
     return exporter.export_dungeon(map_name, map_id, wmo_path, wmo_paths)

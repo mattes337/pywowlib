@@ -19,6 +19,7 @@ Target build: WotLK 3.3.5a (build 12340)
 """
 
 import os
+import io
 import json
 import re
 import logging
@@ -490,6 +491,124 @@ class IDAllocator(object):
     def next_lfgdungeon_id(self):
         """Return the next available LFGDungeons.dbc ID."""
         return self._next("lfgdungeon")
+
+
+# ---------------------------------------------------------------------------
+# MPQ archive chain - read files from WoW MPQ archives in priority order
+# ---------------------------------------------------------------------------
+
+try:
+    import mpyq
+    _HAS_MPYQ = True
+except ImportError:
+    _HAS_MPYQ = False
+
+
+# WotLK 3.3.5a MPQ priority order (highest to lowest).
+# {locale} is substituted at runtime (default "enUS").
+_MPQ_PRIORITY = [
+    "{locale}/patch-{locale}-3.MPQ",
+    "{locale}/patch-{locale}-2.MPQ",
+    "{locale}/patch-{locale}.MPQ",
+    "{locale}/locale-{locale}.MPQ",
+    "patch-3.MPQ",
+    "patch-2.MPQ",
+    "patch.MPQ",
+    "lichking.MPQ",
+    "expansion.MPQ",
+    "common-2.MPQ",
+    "common.MPQ",
+]
+
+
+class MPQChain(object):
+    """Read files from a chain of MPQ archives in priority order.
+
+    Opens all MPQ files found under *wow_root*/Data in WotLK 3.3.5a
+    priority order.  ``read_file()`` searches from highest-priority
+    archive to lowest; the first match wins.
+
+    mpyq's hash function already upper-cases file names, so lookups
+    are case-insensitive.  Callers should pass paths with backslash
+    separators (MPQ convention).
+    """
+
+    def __init__(self, wow_root, locale='enUS'):
+        if not _HAS_MPYQ:
+            raise ImportError("mpyq is required for MPQ archive reading")
+
+        self._archives = []
+        data_dir = os.path.join(wow_root, "Data")
+
+        for template in _MPQ_PRIORITY:
+            rel = template.format(locale=locale)
+            path = os.path.join(data_dir, rel)
+            if os.path.isfile(path):
+                try:
+                    arc = mpyq.MPQArchive(path, listfile=False)
+                    self._archives.append(arc)
+                    log.debug("Opened MPQ: %s", path)
+                except Exception as e:
+                    log.warning("Failed to open MPQ %s: %s", path, e)
+
+        log.info("MPQChain: %d archives opened from %s", len(self._archives),
+                 data_dir)
+
+    def read_file(self, internal_path):
+        """Read a file by its MPQ internal path.
+
+        Args:
+            internal_path: MPQ-style path with backslashes
+                (e.g. ``TILESET\\\\Foo\\\\Bar.blp``).
+
+        Returns:
+            bytes or None: File contents, or None if not found.
+        """
+        # Normalise forward-slashes to backslashes for MPQ lookup
+        normalized = internal_path.replace('/', '\\')
+        for arc in self._archives:
+            data = arc.read_file(normalized)
+            if data is not None:
+                return data
+        return None
+
+    def close(self):
+        """Close all open archive file handles."""
+        for arc in self._archives:
+            try:
+                arc.file.close()
+            except Exception:
+                pass
+        self._archives = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+def blp_to_png(blp_bytes, output_path, display_size=None):
+    """Convert BLP image bytes to a PNG file on disk.
+
+    Uses Pillow's native BLP2 codec.  Optionally resizes to the
+    intended display dimensions (e.g. loading screens are stored
+    as square textures but displayed at 4:3).
+
+    Args:
+        blp_bytes: Raw BLP file contents as bytes.
+        output_path: Destination path for the PNG file.
+        display_size: Optional (width, height) tuple.  If given the
+            image is resized to these dimensions before saving.
+    """
+    from PIL import Image
+    img = Image.open(io.BytesIO(blp_bytes))
+    if display_size and (display_size[0], display_size[1]) != img.size:
+        img = img.resize(display_size, Image.LANCZOS)
+    parent = os.path.dirname(output_path)
+    if parent and not os.path.exists(parent):
+        os.makedirs(parent)
+    img.save(output_path, 'PNG')
 
 
 # ---------------------------------------------------------------------------
