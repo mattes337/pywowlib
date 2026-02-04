@@ -53,6 +53,16 @@ from .addon_generator import generate_addon
 from .m2_gltf_writer import M2GltfWriter, M2GltfReader
 from .adt_gltf_writer import (adt_to_heightmap, adt_to_gltf,
                                heightmap_to_adt, gltf_to_adt)
+from .zone_planner import (plan_zone, preview_heightmap,
+                            list_archetypes, list_landmark_types)
+from .zone_editor import (load_zone_from_adts, load_single_adt,
+                           query_position, query_tile, query_subzone_at,
+                           add_subzone, remove_subzone, modify_subzone,
+                           add_landmark, remove_landmark,
+                           modify_terrain_at, change_textures_in_area,
+                           add_doodads_in_area, remove_doodads_in_area,
+                           world_to_norm, norm_to_world, norm_to_tile,
+                           tile_to_norm, export_for_adt_composer)
 
 
 def build_zone(name, output_dir, coords=None, heightmap=None, texture_paths=None,
