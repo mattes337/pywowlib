@@ -4,7 +4,7 @@ from .. import WoWVersionManager, WoWVersions
 
 __reload_order_index__ = 2
 
-TILE_SIZE = 5533.333333333
+TILE_SIZE = 533.33333333
 MAP_SIZE_MIN = -17066.66656
 MAP_SIZE_MAX = 17066.66657
 

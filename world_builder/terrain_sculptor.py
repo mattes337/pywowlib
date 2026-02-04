@@ -47,8 +47,8 @@ except ImportError:
 # Constants (mirrored from adt_composer for coordinate math)
 # ---------------------------------------------------------------------------
 
-TILE_SIZE = 5533.333333333        # Yards per ADT tile
-CHUNK_SIZE = TILE_SIZE / 16.0     # ~345.83 yards per sub-chunk
+TILE_SIZE = 533.33333333          # Yards per ADT tile (17066.666 / 32)
+CHUNK_SIZE = TILE_SIZE / 16.0     # ~33.33 yards per sub-chunk
 MAP_SIZE_MIN = -17066.66656
 MAP_SIZE_MAX = 17066.66657
 

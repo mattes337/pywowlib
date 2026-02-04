@@ -75,19 +75,74 @@ def _hash_string(string, hash_type):
 # ---------------------------------------------------------------------------
 
 _MPQ_MAGIC = b'MPQ\x1a'
-_MPQ_HEADER_SIZE = 32
+_MPQ_HEADER_V1_SIZE = 32
+_MPQ_HEADER_V2_SIZE = 44
+_MPQ_HEADER_SIZE = _MPQ_HEADER_V2_SIZE  # use v2 (44-byte) header for WoW 3.3.5a compat
 _MPQ_FORMAT_V1 = 0
+_MPQ_FORMAT_V2 = 1
 _SECTOR_SIZE_SHIFT = 3  # sector_size = 512 << 3 = 4096
 
 # Block table flags
 _FILE_EXISTS = 0x80000000
-_FILE_SINGLE_UNIT = 0x04000000
-_FILE_FLAGS = _FILE_EXISTS | _FILE_SINGLE_UNIT  # 0x84000000
+_FILE_SINGLE_UNIT = 0x01000000
+_FILE_FLAGS = _FILE_EXISTS | _FILE_SINGLE_UNIT  # 0x81000000
 
 # Hash table sentinel values
 _HASH_ENTRY_EMPTY = 0xFFFFFFFF
-_HASH_LOCALE_NEUTRAL = 0xFFFF
+_HASH_LOCALE_NEUTRAL = 0x0000
 _HASH_PLATFORM_DEFAULT = 0
+
+
+def _encrypt_block(data, key):
+    """Encrypt a block of data (hash table or block table) using MPQ encryption.
+
+    Args:
+        data: bytes to encrypt (must be multiple of 4 bytes).
+        key: 32-bit encryption key.
+
+    Returns:
+        bytes: Encrypted data.
+    """
+    seed1 = key & 0xFFFFFFFF
+    seed2 = 0xEEEEEEEE
+
+    result = bytearray(len(data))
+    for i in range(0, len(data), 4):
+        seed2 = (seed2 + CRYPT_TABLE[0x400 + (seed1 & 0xFF)]) & 0xFFFFFFFF
+        plain = struct.unpack_from('<I', data, i)[0]
+        encrypted = (plain ^ (seed1 + seed2)) & 0xFFFFFFFF
+        struct.pack_into('<I', result, i, encrypted)
+        seed1 = ((~seed1 << 0x15) + 0x11111111) | (seed1 >> 0x0B)
+        seed1 = seed1 & 0xFFFFFFFF
+        seed2 = (plain + seed2 + (seed2 << 5) + 3) & 0xFFFFFFFF
+
+    return bytes(result)
+
+
+def _decrypt_block(data, key):
+    """Decrypt a block of data using MPQ encryption.
+
+    Args:
+        data: bytes to decrypt (must be multiple of 4 bytes).
+        key: 32-bit encryption key.
+
+    Returns:
+        bytes: Decrypted data.
+    """
+    seed1 = key & 0xFFFFFFFF
+    seed2 = 0xEEEEEEEE
+
+    result = bytearray(len(data))
+    for i in range(0, len(data), 4):
+        seed2 = (seed2 + CRYPT_TABLE[0x400 + (seed1 & 0xFF)]) & 0xFFFFFFFF
+        value = struct.unpack_from('<I', data, i)[0]
+        value = (value ^ (seed1 + seed2)) & 0xFFFFFFFF
+        struct.pack_into('<I', result, i, value)
+        seed1 = ((~seed1 << 0x15) + 0x11111111) | (seed1 >> 0x0B)
+        seed1 = seed1 & 0xFFFFFFFF
+        seed2 = (value + seed2 + (seed2 << 5) + 3) & 0xFFFFFFFF
+
+    return bytes(result)
 
 
 # ---------------------------------------------------------------------------
@@ -193,8 +248,9 @@ class PurePythonMPQWriter:
 
         # -- Build hash table --
         # Each entry: (hash_a, hash_b, locale, platform, block_index)
+        # Empty entries: all fields 0xFFFFFFFF (locale=0xFFFF, platform=0xFFFF)
         hash_table = [(_HASH_ENTRY_EMPTY, _HASH_ENTRY_EMPTY,
-                        _HASH_LOCALE_NEUTRAL, _HASH_PLATFORM_DEFAULT,
+                        0xFFFF, 0xFFFF,
                         _HASH_ENTRY_EMPTY)] * hash_table_size
         # Convert to mutable list
         hash_table = list(hash_table)
@@ -224,37 +280,47 @@ class PurePythonMPQWriter:
         os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
 
         with open(output_path, 'wb') as f:
-            # Header (32 bytes)
+            # Header (44 bytes, v2 format for WoW 3.3.5a compatibility)
             f.write(_MPQ_MAGIC)                                  # magic
-            f.write(struct.pack('<I', _MPQ_HEADER_SIZE))         # header size
+            f.write(struct.pack('<I', _MPQ_HEADER_SIZE))         # header size (44)
             f.write(struct.pack('<I', archive_size))             # archive size
-            f.write(struct.pack('<H', _MPQ_FORMAT_V1))           # format version
+            f.write(struct.pack('<H', _MPQ_FORMAT_V2))           # format version (1)
             f.write(struct.pack('<H', _SECTOR_SIZE_SHIFT))       # sector size shift
             f.write(struct.pack('<I', hash_table_offset))        # hash table offset
             f.write(struct.pack('<I', block_table_offset))       # block table offset
             f.write(struct.pack('<I', hash_table_size))          # hash table entries
             f.write(struct.pack('<I', num_files))                # block table entries
+            # v2 extended fields (12 bytes)
+            f.write(struct.pack('<Q', 0))                        # hi block table offset
+            f.write(struct.pack('<H', 0))                        # hash table offset high
+            f.write(struct.pack('<H', 0))                        # block table offset high
 
             # File data blocks
             for blob in file_data_blobs:
                 f.write(blob)
 
-            # Hash table
+            # Hash table (must be encrypted)
+            hash_table_raw = bytearray()
             for (ha, hb, locale, platform, block_idx) in hash_table:
-                f.write(struct.pack('<I', ha))
-                f.write(struct.pack('<I', hb))
-                f.write(struct.pack('<H', locale))
-                f.write(struct.pack('<H', platform))
-                f.write(struct.pack('<I', block_idx))
+                hash_table_raw += struct.pack('<I', ha)
+                hash_table_raw += struct.pack('<I', hb)
+                hash_table_raw += struct.pack('<H', locale)
+                hash_table_raw += struct.pack('<H', platform)
+                hash_table_raw += struct.pack('<I', block_idx)
+            hash_key = _hash_string("(hash table)", 3)
+            f.write(_encrypt_block(bytes(hash_table_raw), hash_key))
 
-            # Block table
+            # Block table (must be encrypted)
+            block_table_raw = bytearray()
             for (file_ofs, comp_size, uncomp_size, flags) in block_entries:
-                f.write(struct.pack('<I', file_ofs))
-                f.write(struct.pack('<I', comp_size))
-                f.write(struct.pack('<I', uncomp_size))
-                f.write(struct.pack('<I', flags))
+                block_table_raw += struct.pack('<I', file_ofs)
+                block_table_raw += struct.pack('<I', comp_size)
+                block_table_raw += struct.pack('<I', uncomp_size)
+                block_table_raw += struct.pack('<I', flags)
+            block_key = _hash_string("(block table)", 3)
+            f.write(_encrypt_block(bytes(block_table_raw), block_key))
 
-        log.info("Wrote MPQ v1 archive: %s (%d files, %d bytes)",
+        log.info("Wrote MPQ v2 archive: %s (%d files, %d bytes)",
                  output_path, num_files, archive_size)
         return output_path
 
@@ -327,24 +393,29 @@ def _try_read_listfile(f, header_info):
     block_table_offset = header_info['block_table_offset']
     hash_table_entries = header_info['hash_table_entries']
 
+    block_table_entries = header_info.get('block_table_entries', 0)
+
     # Compute hashes for (listfile)
     target_index = _hash_string(listfile_name, 0) % hash_table_entries
     target_a = _hash_string(listfile_name, 1)
     target_b = _hash_string(listfile_name, 2)
 
+    # Read and decrypt hash table
+    f.seek(hash_table_offset)
+    hash_table_raw = f.read(hash_table_entries * 16)
+    hash_key = _hash_string("(hash table)", 3)
+    hash_table_dec = _decrypt_block(hash_table_raw, hash_key)
+
     # Search hash table
     block_idx = None
     for probe in range(hash_table_entries):
         slot = (target_index + probe) % hash_table_entries
-        f.seek(hash_table_offset + slot * 16)
-        ha = struct.unpack('<I', f.read(4))[0]
-        hb = struct.unpack('<I', f.read(4))[0]
-        _locale = struct.unpack('<H', f.read(2))[0]
-        _platform = struct.unpack('<H', f.read(2))[0]
-        bi = struct.unpack('<I', f.read(4))[0]
+        off = slot * 16
+        ha = struct.unpack_from('<I', hash_table_dec, off)[0]
+        hb = struct.unpack_from('<I', hash_table_dec, off + 4)[0]
+        bi = struct.unpack_from('<I', hash_table_dec, off + 12)[0]
 
         if bi == _HASH_ENTRY_EMPTY:
-            # Empty slot -- file not in archive
             break
         if ha == target_a and hb == target_b:
             block_idx = bi
@@ -353,12 +424,16 @@ def _try_read_listfile(f, header_info):
     if block_idx is None:
         return None
 
-    # Read block table entry
-    f.seek(block_table_offset + block_idx * 16)
-    file_offset = struct.unpack('<I', f.read(4))[0]
-    compressed_size = struct.unpack('<I', f.read(4))[0]
-    _uncompressed_size = struct.unpack('<I', f.read(4))[0]
-    flags = struct.unpack('<I', f.read(4))[0]
+    # Read and decrypt block table entry
+    f.seek(block_table_offset)
+    block_table_raw = f.read(block_table_entries * 16)
+    block_key = _hash_string("(block table)", 3)
+    block_table_dec = _decrypt_block(block_table_raw, block_key)
+    off = block_idx * 16
+    file_offset = struct.unpack_from('<I', block_table_dec, off)[0]
+    compressed_size = struct.unpack_from('<I', block_table_dec, off + 4)[0]
+    _uncompressed_size = struct.unpack_from('<I', block_table_dec, off + 8)[0]
+    flags = struct.unpack_from('<I', block_table_dec, off + 12)[0]
 
     if not (flags & _FILE_EXISTS):
         return None
@@ -422,25 +497,33 @@ class PurePythonMPQReader:
                 'block_table_entries': block_table_entries,
             }
 
-            # Read hash table
+            # Read and decrypt hash table
             f.seek(hash_table_offset)
+            hash_table_raw = f.read(hash_table_entries * 16)
+            hash_key = _hash_string("(hash table)", 3)
+            hash_table_dec = _decrypt_block(hash_table_raw, hash_key)
             self._hash_table = []
-            for _ in range(hash_table_entries):
-                ha = struct.unpack('<I', f.read(4))[0]
-                hb = struct.unpack('<I', f.read(4))[0]
-                locale = struct.unpack('<H', f.read(2))[0]
-                platform = struct.unpack('<H', f.read(2))[0]
-                block_idx = struct.unpack('<I', f.read(4))[0]
+            for i in range(hash_table_entries):
+                off = i * 16
+                ha = struct.unpack_from('<I', hash_table_dec, off)[0]
+                hb = struct.unpack_from('<I', hash_table_dec, off + 4)[0]
+                locale = struct.unpack_from('<H', hash_table_dec, off + 8)[0]
+                platform = struct.unpack_from('<H', hash_table_dec, off + 10)[0]
+                block_idx = struct.unpack_from('<I', hash_table_dec, off + 12)[0]
                 self._hash_table.append((ha, hb, locale, platform, block_idx))
 
-            # Read block table
+            # Read and decrypt block table
             f.seek(block_table_offset)
+            block_table_raw = f.read(block_table_entries * 16)
+            block_key = _hash_string("(block table)", 3)
+            block_table_dec = _decrypt_block(block_table_raw, block_key)
             self._block_table = []
-            for _ in range(block_table_entries):
-                file_ofs = struct.unpack('<I', f.read(4))[0]
-                comp_size = struct.unpack('<I', f.read(4))[0]
-                uncomp_size = struct.unpack('<I', f.read(4))[0]
-                flags = struct.unpack('<I', f.read(4))[0]
+            for i in range(block_table_entries):
+                off = i * 16
+                file_ofs = struct.unpack_from('<I', block_table_dec, off)[0]
+                comp_size = struct.unpack_from('<I', block_table_dec, off + 4)[0]
+                uncomp_size = struct.unpack_from('<I', block_table_dec, off + 8)[0]
+                flags = struct.unpack_from('<I', block_table_dec, off + 12)[0]
                 self._block_table.append((file_ofs, comp_size, uncomp_size, flags))
 
     def _find_file(self, filename):

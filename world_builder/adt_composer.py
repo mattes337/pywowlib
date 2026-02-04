@@ -34,8 +34,8 @@ log = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-TILE_SIZE = 5533.333333333        # Yards per ADT tile
-CHUNK_SIZE = TILE_SIZE / 16.0     # ~345.83 yards per sub-chunk
+TILE_SIZE = 533.33333333          # Yards per ADT tile (17066.666 / 32)
+CHUNK_SIZE = TILE_SIZE / 16.0     # ~33.33 yards per sub-chunk
 MAP_SIZE_MIN = -17066.66656
 MAP_SIZE_MAX = 17066.66657
 
@@ -63,7 +63,7 @@ _MCAL_LAYER_SIZE = 4096           # Highres uncompressed alpha (64*64 bytes)
 _MAGIC_MVER = b'REVM'
 _MAGIC_MHDR = b'RDHM'
 _MAGIC_MCIN = b'NICM'
-_MAGIC_MTEX = b'XTEM'
+_MAGIC_MTEX = b'XETM'
 _MAGIC_MMDX = b'XDMM'
 _MAGIC_MMID = b'DIMM'
 _MAGIC_MWMO = b'OMWM'
@@ -79,8 +79,8 @@ _MAGIC_MCAL = b'LACM'
 _MAGIC_MCSH = b'HSCM'
 _MAGIC_MCSE = b'ESCM'
 
-# Default texture when none provided
-_DEFAULT_TEXTURE = "Tileset\\Generic\\Black.blp"
+# Default texture when none provided (ElwynnGrassBase is guaranteed in 3.3.5a)
+_DEFAULT_TEXTURE = "Tileset\\Elwynn\\ElwynnGrassBase.blp"
 
 
 # ---------------------------------------------------------------------------
@@ -332,7 +332,7 @@ def _build_mcnk(chunk_row, chunk_col, tile_x, tile_y,
         texture_id = layer_idx  # Index into MTEX string block
         flags = 0
         offset_in_mcal = 0
-        effect_id = 0
+        effect_id = 0xFFFFFFFF  # -1 = no ground effect (GroundEffectTexture DBC)
 
         if layer_idx > 0:
             flags = 0x100  # use_alpha_map flag
@@ -373,9 +373,10 @@ def _build_mcnk(chunk_row, chunk_col, tile_x, tile_y,
     interior_size = len(interior_data)
 
     # -- Build the 128-byte MCNK header --
-    # All sub-chunk offsets in the MCNK header are relative to the start of
-    # the MCNK chunk (i.e., the position of the MCNK magic bytes), and they
-    # include the 8-byte MCNK chunk header + 128-byte MCNK header prefix.
+    # All sub-chunk offsets in the MCNK header point to the sub-chunk DATA
+    # (past the sub-chunk's own 8-byte magic+size header).  They are relative
+    # to the start of the MCNK data (after the 8-byte MCNK chunk header).
+    # So: base = 128 (MCNK header) + 8 (sub-chunk header) = 136.
     base_offset = _CHUNK_HEADER_SIZE + _MCNK_HEADER_SIZE
 
     # Chunk world position
@@ -385,7 +386,9 @@ def _build_mcnk(chunk_row, chunk_col, tile_x, tile_y,
 
     mcnk_hdr = BytesIO()
 
-    # flags (uint32) - DO_NOT_FIX_ALPHA_MAP set (0x8000) for highres alpha
+    # flags (uint32) - do_not_fix_alpha_map (bit 15 = 0x8000) is standard for
+    # Noggit-generated maps.  Tells the client not to apply the legacy 63->64
+    # alpha row/column duplication.
     mcnk_flags = 0x8000
     mcnk_hdr.write(struct.pack('<I', mcnk_flags))
 
@@ -412,8 +415,8 @@ def _build_mcnk(chunk_row, chunk_col, tile_x, tile_y,
     # ofs_mcal (uint32)
     mcnk_hdr.write(struct.pack('<I', base_offset + mcal_offset))
 
-    # size_mcal (uint32)
-    mcnk_hdr.write(struct.pack('<I', mcal_data_size))
+    # size_mcal (uint32) - includes the 8-byte chunk header per Noggit convention
+    mcnk_hdr.write(struct.pack('<I', _CHUNK_HEADER_SIZE + mcal_data_size))
 
     # ofs_mcsh (uint32) - 0 (no shadow map)
     mcnk_hdr.write(struct.pack('<I', 0))
