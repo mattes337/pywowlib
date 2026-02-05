@@ -58,6 +58,7 @@ _MCVT_DATA_SIZE = _HEIGHTS_PER_CHUNK * 4   # 145 float32 = 580 bytes
 _MCNR_DATA_SIZE = _NORMALS_PER_CHUNK * 3   # 145 * 3 int8 = 435 bytes
 _MCLY_ENTRY_SIZE = 16             # Per-layer entry in MCLY
 _MCAL_LAYER_SIZE = 4096           # Highres uncompressed alpha (64*64 bytes)
+_MCAL_LAYER_SIZE_LOWRES = 2048   # Lowres uncompressed alpha (64*32 bytes)
 
 # Reversed chunk magics (WoW convention: stored reversed in file)
 _MAGIC_MVER = b'REVM'
@@ -292,13 +293,15 @@ def _build_mtex_data(texture_paths):
 # ---------------------------------------------------------------------------
 
 def _build_mcnk(chunk_row, chunk_col, tile_x, tile_y,
-                 heightmap, texture_paths, splat_map, area_id):
+                 heightmap, texture_paths, splat_map, area_id,
+                 big_alpha=True):
     """
     Build a single MCNK sub-chunk (header + all interior sub-chunks).
 
     Returns the complete MCNK bytes including its chunk header.
     """
     n_layers = len(texture_paths) if texture_paths else 1
+    alpha_layer_size = _MCAL_LAYER_SIZE if big_alpha else _MCAL_LAYER_SIZE_LOWRES
 
     # Compute heights and normals
     heights = _compute_chunk_heights(heightmap, chunk_row, chunk_col)
@@ -337,7 +340,7 @@ def _build_mcnk(chunk_row, chunk_col, tile_x, tile_y,
         if layer_idx > 0:
             flags = 0x100  # use_alpha_map flag
             offset_in_mcal = alpha_offset_in_mcal
-            alpha_offset_in_mcal += _MCAL_LAYER_SIZE
+            alpha_offset_in_mcal += alpha_layer_size
 
         interior.write(struct.pack('<IIII', texture_id, flags, offset_in_mcal, effect_id))
 
@@ -348,19 +351,34 @@ def _build_mcnk(chunk_row, chunk_col, tile_x, tile_y,
     # MCAL (alpha maps) - only for layers > 0
     mcal_offset = interior.tell()
     n_alpha_layers = max(0, n_layers - 1)
-    mcal_data_size = n_alpha_layers * _MCAL_LAYER_SIZE
+    mcal_data_size = n_alpha_layers * alpha_layer_size
     _write_chunk_header(interior, _MAGIC_MCAL, mcal_data_size)
 
     for layer_idx in range(1, n_layers):
-        if splat_map is not None and layer_idx in splat_map:
-            alpha_data = splat_map[layer_idx]
-            for row in range(64):
-                for col in range(64):
-                    val = alpha_data[row][col] if row < len(alpha_data) and col < len(alpha_data[row]) else 0
-                    interior.write(struct.pack('<B', max(0, min(255, int(val)))))
+        # Support per-chunk keys (layer_idx, chunk_row, chunk_col) or global layer_idx
+        alpha_data = None
+        if splat_map is not None:
+            per_chunk_key = (layer_idx, chunk_row, chunk_col)
+            if per_chunk_key in splat_map:
+                alpha_data = splat_map[per_chunk_key]
+            elif layer_idx in splat_map:
+                alpha_data = splat_map[layer_idx]
+        if alpha_data is not None:
+            if big_alpha:
+                # 64x64 highres alpha
+                for row in range(64):
+                    for col in range(64):
+                        val = alpha_data[row][col] if row < len(alpha_data) and col < len(alpha_data[row]) else 0
+                        interior.write(struct.pack('<B', max(0, min(255, int(val)))))
+            else:
+                # 64x32 lowres alpha: write every other row (32 rows of 64 bytes)
+                for row in range(0, 64, 2):
+                    for col in range(64):
+                        val = alpha_data[row][col] if row < len(alpha_data) and col < len(alpha_data[row]) else 0
+                        interior.write(struct.pack('<B', max(0, min(255, int(val)))))
         else:
             # Default: fully opaque for this layer
-            interior.write(b'\xff' * _MCAL_LAYER_SIZE)
+            interior.write(b'\xff' * alpha_layer_size)
 
     # MCSH (shadow map) - empty, not present (flag not set)
     # We skip MCSH entirely since we don't set the HAS_MCSH flag.
@@ -489,7 +507,7 @@ def _build_mcnk(chunk_row, chunk_col, tile_x, tile_y,
 # ---------------------------------------------------------------------------
 
 def create_adt(tile_x, tile_y, heightmap=None, texture_paths=None,
-               splat_map=None, area_id=0):
+               splat_map=None, area_id=0, big_alpha=True):
     """
     Generate a valid ADT binary file for WoW WotLK 3.3.5a.
 
@@ -506,6 +524,10 @@ def create_adt(tile_x, tile_y, heightmap=None, texture_paths=None,
                    list [64][64] of alpha values (0-255) for layers > 0.
                    Layer 0 is always the base and has no alpha map.
         area_id: Area ID applied to all 256 sub-chunks.
+        big_alpha: If True (default), write 4096-byte highres alpha maps
+                   (64x64). If False, write 2048-byte lowres alpha maps
+                   (64x32) for compatibility with maps whose WDT does not
+                   have the MPHD big-alpha flag (0x4), such as Azeroth.
 
     Returns:
         bytes: Complete ADT file content ready for writing to disk.
@@ -534,7 +556,8 @@ def create_adt(tile_x, tile_y, heightmap=None, texture_paths=None,
     for row in range(_CHUNKS_PER_SIDE):
         for col in range(_CHUNKS_PER_SIDE):
             blob = _build_mcnk(row, col, tile_x, tile_y,
-                               heightmap, texture_paths, splat_map, area_id)
+                               heightmap, texture_paths, splat_map, area_id,
+                               big_alpha=big_alpha)
             mcnk_blobs.append(blob)
 
     # -- Phase 2: Build top-level chunks before MCNK --
@@ -1302,3 +1325,174 @@ def add_wmo_to_adt(adt_bytes, wmo_path, position, rotation=(0, 0, 0),
 
     return _rebuild_adt(adt_bytes, mmdx_data, mmid_data, mddf_data,
                         mwmo_data, mwid_data, modf_data)
+
+
+# ---------------------------------------------------------------------------
+# MCRF update (per-chunk doodad/WMO references)
+# ---------------------------------------------------------------------------
+
+def _parse_placement_positions(adt_bytes, magic, entry_size):
+    """Extract (x, y, z) positions from MDDF or MODF placement data.
+
+    Position sits at byte offset 8 within each entry (after nameID + uniqueID).
+
+    Returns:
+        list of (float, float, float) tuples.
+    """
+    data_ofs, data_sz = _find_chunk(adt_bytes, magic)
+    if data_ofs is None or data_sz == 0:
+        return []
+    n_entries = data_sz // entry_size
+    positions = []
+    for i in range(n_entries):
+        ofs = data_ofs + i * entry_size + 8  # skip nameID(4) + uniqueID(4)
+        x, y, z = struct.unpack_from('<3f', adt_bytes, ofs)
+        positions.append((x, y, z))
+    return positions
+
+
+def _rebuild_mcnk_mcrf(mcnk_blob, doodad_indices, wmo_indices):
+    """Rebuild a single MCNK blob with updated MCRF references.
+
+    Splices new MCRF data in place of the old, updates the MCNK header
+    counters (n_doodad_refs, n_map_obj_refs), and fixes sub-chunk offsets
+    that point past MCRF (ofs_mcal, ofs_mcsh, ofs_mcse).
+    """
+    mcrf_pos = mcnk_blob.find(_MAGIC_MCRF)
+    if mcrf_pos == -1:
+        return mcnk_blob
+
+    old_mcrf_data_size = struct.unpack_from('<I', mcnk_blob, mcrf_pos + 4)[0]
+
+    # Build new MCRF payload: doodad indices then WMO indices (uint32 each)
+    mcrf_payload = b''
+    for idx in doodad_indices:
+        mcrf_payload += struct.pack('<I', idx)
+    for idx in wmo_indices:
+        mcrf_payload += struct.pack('<I', idx)
+
+    new_mcrf_chunk = _MAGIC_MCRF + struct.pack('<I', len(mcrf_payload)) + mcrf_payload
+
+    # Splice: replace old MCRF chunk with new one
+    before = mcnk_blob[:mcrf_pos]
+    after = mcnk_blob[mcrf_pos + 8 + old_mcrf_data_size:]
+    new_blob = bytearray(before + new_mcrf_chunk + after)
+
+    # Update MCNK total size (at offset 4 in the 8-byte header)
+    new_total = len(new_blob) - 8
+    struct.pack_into('<I', new_blob, 4, new_total)
+
+    # Update n_doodad_refs (data header offset 16, file offset 8+16=24)
+    struct.pack_into('<I', new_blob, 8 + 16, len(doodad_indices))
+
+    # Update n_map_obj_refs (data header offset 56, file offset 8+56=64)
+    struct.pack_into('<I', new_blob, 8 + 56, len(wmo_indices))
+
+    # Fix offsets to sub-chunks positioned after MCRF
+    size_diff = len(mcrf_payload) - old_mcrf_data_size
+    if size_diff != 0:
+        # ofs_mcal (header offset 36), ofs_mcsh (44), ofs_mcse (88)
+        for hdr_off in (36, 44, 88):
+            old_val = struct.unpack_from('<I', new_blob, 8 + hdr_off)[0]
+            if old_val > 0:
+                struct.pack_into('<I', new_blob, 8 + hdr_off, old_val + size_diff)
+
+    return bytes(new_blob)
+
+
+def update_mcrf(adt_bytes, tile_x, tile_y):
+    """Populate per-chunk MCRF references for all 256 MCNKs in an ADT.
+
+    After inserting doodads/WMOs via ``add_doodad_to_adt`` /
+    ``add_wmo_to_adt``, this function must be called so every MCNK
+    correctly references the objects that overlap its area.  Without
+    proper MCRF the client may flicker or hide objects depending on
+    camera direction.
+
+    Args:
+        adt_bytes: Complete ADT binary (with MDDF/MODF already populated).
+        tile_x: Tile X coordinate (0-63).
+        tile_y: Tile Y coordinate (0-63).
+
+    Returns:
+        bytes: Updated ADT binary with corrected MCRF entries.
+    """
+    # Parse placement positions
+    doodad_positions = _parse_placement_positions(adt_bytes, _MAGIC_MDDF, 36)
+    wmo_positions = _parse_placement_positions(adt_bytes, _MAGIC_MODF, 64)
+
+    if not doodad_positions and not wmo_positions:
+        return adt_bytes  # Nothing to reference
+
+    # Extract all 256 MCNK blobs
+    chunks = _find_all_chunks(adt_bytes)
+    if _MAGIC_MCNK not in chunks:
+        return adt_bytes
+
+    mcnk_blobs = []
+    pos = chunks[_MAGIC_MCNK][0]  # header offset of first MCNK
+    while pos < len(adt_bytes) - 8:
+        magic = adt_bytes[pos:pos + 4]
+        if magic != _MAGIC_MCNK:
+            break
+        size = struct.unpack_from('<I', adt_bytes, pos + 4)[0]
+        mcnk_blobs.append(adt_bytes[pos:pos + 8 + size])
+        pos += 8 + size
+
+    if len(mcnk_blobs) != _TOTAL_CHUNKS:
+        log.warning("Expected 256 MCNKs, found %d - skipping MCRF update",
+                    len(mcnk_blobs))
+        return adt_bytes
+
+    # Margin for overlap detection: objects can extend beyond their origin
+    # chunk, so use a generous margin (~1 chunk)
+    margin = CHUNK_SIZE
+
+    new_mcnk_blobs = []
+    for chunk_idx in range(_TOTAL_CHUNKS):
+        crow = chunk_idx // _CHUNKS_PER_SIDE
+        ccol = chunk_idx % _CHUNKS_PER_SIDE
+
+        # Chunk world bounds (matching _build_mcnk pos_x / pos_y logic)
+        cx_max = MAP_SIZE_MAX - tile_y * TILE_SIZE - crow * CHUNK_SIZE
+        cx_min = cx_max - CHUNK_SIZE
+        cy_max = MAP_SIZE_MAX - tile_x * TILE_SIZE - ccol * CHUNK_SIZE
+        cy_min = cy_max - CHUNK_SIZE
+
+        # Find overlapping doodads
+        d_indices = []
+        for i, (px, py, _pz) in enumerate(doodad_positions):
+            if (cx_min - margin <= px <= cx_max + margin and
+                    cy_min - margin <= py <= cy_max + margin):
+                d_indices.append(i)
+
+        # Find overlapping WMOs
+        w_indices = []
+        for i, (px, py, _pz) in enumerate(wmo_positions):
+            if (cx_min - margin <= px <= cx_max + margin and
+                    cy_min - margin <= py <= cy_max + margin):
+                w_indices.append(i)
+
+        new_mcnk_blobs.append(
+            _rebuild_mcnk_mcrf(mcnk_blobs[chunk_idx], d_indices, w_indices))
+
+    # Reassemble ADT: keep everything before the first MCNK, replace MCNKs,
+    # then recalculate MCIN offsets.
+    first_mcnk_pos = chunks[_MAGIC_MCNK][0]
+    pre_mcnk = bytearray(adt_bytes[:first_mcnk_pos])
+
+    # Update MCIN entries (absolute offsets to each MCNK)
+    mcin_pos = chunks[_MAGIC_MCIN][1]  # data offset of MCIN
+    current_pos = first_mcnk_pos
+    for i in range(_TOTAL_CHUNKS):
+        blob_size = len(new_mcnk_blobs[i])
+        struct.pack_into('<IIII', pre_mcnk, mcin_pos + i * 16,
+                         current_pos, blob_size, 0, 0)
+        current_pos += blob_size
+
+    buf = BytesIO()
+    buf.write(bytes(pre_mcnk))
+    for blob in new_mcnk_blobs:
+        buf.write(blob)
+
+    return buf.getvalue()
