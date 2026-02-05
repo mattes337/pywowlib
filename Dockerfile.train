@@ -1,0 +1,25 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Ensure Python output is unbuffered (visible in docker logs)
+ENV PYTHONUNBUFFERED=1
+
+# Install PyTorch CPU-only, mpyq, numpy
+RUN pip install --no-cache-dir \
+    torch --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir numpy mpyq
+
+# Copy project source
+COPY world_builder/ /app/world_builder/
+COPY tools/train_terrain_model.py /app/tools/train_terrain_model.py
+
+# WoW Data mounted at /data, output weights written to /output volume.
+# Using a shell wrapper to avoid Git Bash path mangling on Windows.
+CMD ["python", "tools/train_terrain_model.py", \
+     "--wow-data", "/data", \
+     "--output", "/output/terrain_model.pth", \
+     "--epochs", "200", \
+     "--batch-size", "16", \
+     "--lr", "0.001", \
+     "--patience", "30"]

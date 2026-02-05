@@ -13,7 +13,8 @@ import os
 
 from .wdt_generator import create_wdt, write_wdt, read_wdt
 from .adt_composer import (create_adt, write_adt, read_adt,
-                           add_doodad_to_adt, add_wmo_to_adt)
+                           add_doodad_to_adt, add_wmo_to_adt,
+                           update_mcrf)
 from .dbc_injector import (DBCInjector, register_map, register_area,
                            register_spell, modify_spell,
                            register_skill_line_ability,
@@ -55,6 +56,10 @@ from .adt_gltf_writer import (adt_to_heightmap, adt_to_gltf,
                                heightmap_to_adt, gltf_to_adt)
 from .zone_planner import (plan_zone, preview_heightmap,
                             list_archetypes, list_landmark_types)
+from .world_state import WorldState, make_doodad, make_wmo
+from .terrain_model import (coons_patch, enforce_corner_consistency,
+                            resolve_missing_edges, TerrainRelaxer,
+                            TerrainGenerator)
 from .zone_editor import (load_zone_from_adts, load_single_adt,
                            query_position, query_tile, query_subzone_at,
                            add_subzone, remove_subzone, modify_subzone,
