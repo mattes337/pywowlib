@@ -146,7 +146,9 @@ def cmd_modify(args, db: DBCDB):
         field, value = _parse_field_value(fv)
         fields[field] = value
 
-    db.write_patch(patch_dir, args.table, "modify", args.id, fields)
+    locale = getattr(args, "locale", None)
+    db.write_patch(patch_dir, args.table, "modify", args.id, fields,
+                   locale=locale)
     print("Wrote patch: {} record {} -> {}".format(
         args.table, args.id,
         os.path.join(patch_dir, "*", args.table + ".yaml")))
@@ -170,7 +172,9 @@ def cmd_add(args, db: DBCDB):
             print("ERROR: New record must include an ID field")
             sys.exit(1)
 
-    db.write_patch(patch_dir, args.table, "add", record_id, fields)
+    locale = getattr(args, "locale", None)
+    db.write_patch(patch_dir, args.table, "add", record_id, fields,
+                   locale=locale)
     print("Wrote patch: {} new record {} -> {}".format(
         args.table, record_id,
         os.path.join(patch_dir, "*", args.table + ".yaml")))
@@ -207,13 +211,97 @@ def cmd_merge(args, db: DBCDB):
     print("  Output:   {}".format(output_dir))
     print()
 
-    results = db.merge_directory(original_dir, patch_dirs, output_dir)
+    patched_only = getattr(args, 'patched_only', False)
+    results = db.merge_directory(original_dir, patch_dirs, output_dir,
+                                 patched_only=patched_only)
 
     merged = sum(1 for v in results.values() if v == "merged")
     copied = sum(1 for v in results.values() if v == "copied")
     new = sum(1 for v in results.values() if v == "new")
     print()
     print("{} merged, {} copied, {} new".format(merged, copied, new))
+
+
+def cmd_merge_to_dbc(args, db: DBCDB):
+    """Merge DBC YAML patches and convert directly to binary DBC files.
+
+    Single-pass: parse original + patch → merge in memory → DBC binary.
+    No intermediate YAML written, avoiding the double-parse bottleneck.
+    """
+    original_dir = args.original or ORIGINAL_DBC_DIR
+    output_dir = args.output
+
+    if not output_dir:
+        print("Error: --output is required for merge-to-dbc")
+        sys.exit(1)
+
+    patch_dirs = args.patch_dirs if args.patch_dirs else \
+        [args.patches or PATCH_DBC_DIR]
+    patch_dirs = [d for d in patch_dirs if os.path.isdir(d)]
+    if not patch_dirs:
+        print("No patch directories found")
+        return
+
+    # Import yaml_to_dbc (accepts dict or path)
+    scripts_dir = os.path.join(
+        os.path.dirname(PROJECT_ROOT), "scripts", "pack")
+    sys.path.insert(0, scripts_dir)
+    from yaml_to_dbc import yaml_to_dbc
+
+    # Collect original and patch files
+    orig_files = {}
+    for root, _dirs, files in os.walk(os.path.normpath(original_dir)):
+        for fname in files:
+            if fname.endswith(".yaml"):
+                dbc_name = os.path.splitext(fname)[0]
+                orig_files[dbc_name] = os.path.join(root, fname)
+
+    patch_files = {}
+    for pdir in patch_dirs:
+        pdir = os.path.normpath(pdir)
+        for root, _dirs, files in os.walk(pdir):
+            for fname in files:
+                if fname.endswith(".yaml"):
+                    dbc_name = os.path.splitext(fname)[0]
+                    patch_files.setdefault(dbc_name, []).append(
+                        os.path.join(root, fname))
+
+    os.makedirs(output_dir, exist_ok=True)
+    count = 0
+
+    for dbc_name in sorted(set(patch_files.keys())):
+        patches = patch_files[dbc_name]
+
+        if dbc_name in orig_files:
+            # Merge original + patches in memory
+            merged = db.merge_yaml_data(orig_files[dbc_name], patches[0])
+            for extra in patches[1:]:
+                # For multi-layer: write temp, merge again
+                import tempfile
+                tmp = tempfile.NamedTemporaryFile(
+                    suffix=".yaml", delete=False, mode="w")
+                import yaml as _yaml
+                _yaml.dump(merged, tmp, default_flow_style=False,
+                           allow_unicode=True, sort_keys=False, width=120)
+                tmp.close()
+                merged = db.merge_yaml_data(tmp.name, extra)
+                os.unlink(tmp.name)
+        else:
+            # Patch-only (new table) — load directly
+            import yaml as _yaml
+            _loader = getattr(_yaml, "CSafeLoader", _yaml.SafeLoader)
+            with open(patches[0], "r", encoding="utf-8") as f:
+                merged = _yaml.load(f, Loader=_loader)
+
+        # Convert merged dict directly to DBC binary
+        dbc_bytes = yaml_to_dbc(merged)
+        out_path = os.path.join(output_dir, dbc_name + ".dbc")
+        with open(out_path, "wb") as f:
+            f.write(dbc_bytes)
+        count += 1
+        print("  {} -> {} ({} bytes)".format(dbc_name, out_path, len(dbc_bytes)))
+
+    print("\n{} DBC file(s) built".format(count))
 
 
 def cmd_export(args, db: DBCDB):
@@ -311,6 +399,8 @@ def main():
         help="Write field changes to patch YAML")
     p_modify.add_argument("table", help="Table name")
     p_modify.add_argument("id", type=int, help="Record ID")
+    p_modify.add_argument("--locale", default=None,
+                          help="Locale code (e.g. deDE) — appends _{locale} to _lang fields")
     p_modify.add_argument("fields", nargs="+",
                           help="field=value pairs")
 
@@ -318,6 +408,8 @@ def main():
     p_add = subparsers.add_parser("add", parents=[global_parser],
         help="Add new record to patch YAML")
     p_add.add_argument("table", help="Table name")
+    p_add.add_argument("--locale", default=None,
+                       help="Locale code (e.g. deDE) — appends _{locale} to _lang fields")
     p_add.add_argument("fields", nargs="+",
                        help="field=value pairs (must include ID=N)")
 
@@ -334,6 +426,16 @@ def main():
                          help="Patch directories in layer order (for layered merge)")
     p_merge.add_argument("--output", default=None,
                          help="Output directory (default: .merged/client/dbc)")
+    p_merge.add_argument("--patched-only", action="store_true", default=False,
+                         help="Only output files that have patches (skip copying unmodified originals)")
+
+    # -- merge-to-dbc --
+    p_m2d = subparsers.add_parser("merge-to-dbc", parents=[global_parser],
+        help="Merge patches and convert directly to binary DBC (single pass)")
+    p_m2d.add_argument("--patch-dirs", nargs="+", default=None,
+                        help="Patch directories in layer order")
+    p_m2d.add_argument("--output", required=True,
+                        help="Output directory for .dbc files")
 
     # -- export --
     p_export = subparsers.add_parser("export", parents=[global_parser],
@@ -365,6 +467,7 @@ def main():
             "add": cmd_add,
             "remove": cmd_remove,
             "merge": cmd_merge,
+            "merge-to-dbc": cmd_merge_to_dbc,
             "export": cmd_export,
         }
         commands[args.command](args, db)

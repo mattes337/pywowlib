@@ -185,6 +185,17 @@ def _get_category(table_name: str) -> str:
 # ---------------------------------------------------------------------------
 # SQLite identifier quoting
 # ---------------------------------------------------------------------------
+# Known WoW locale codes
+_LOCALE_CODES = frozenset([
+    "enUS", "koKR", "frFR", "deDE", "enCN", "enTW", "esES", "esMX",
+    "ruRU", "jaJP", "ptPT", "itIT", "zhCN", "zhTW",
+])
+
+_LOCALE_SUFFIX_RE = re.compile(
+    r'^(.+)_(' + '|'.join(_LOCALE_CODES) + r')$'
+)
+
+
 def _quote(name: str) -> str:
     """Quote a SQLite identifier."""
     return '"{}"'.format(name.replace('"', '""'))
@@ -639,7 +650,8 @@ class WorldDB:
     # ------------------------------------------------------------------
     def write_patch(self, table: str, action: str,
                     pk_values: list, fields: dict | None = None,
-                    patch_dir: str = PATCH_DB_DIR):
+                    patch_dir: str = PATCH_DB_DIR,
+                    locale: str | None = None):
         """Write a modification to the patch YAML file.
 
         Args:
@@ -648,7 +660,11 @@ class WorldDB:
             pk_values: Primary key values (list, even for single PK)
             fields: Field values (required for modify/add)
             patch_dir: Base patch directory
+            locale: If set, append _{locale} to field names
         """
+        # Rewrite field names when locale is specified
+        if locale and fields:
+            fields = {"{}_{}".format(k, locale): v for k, v in fields.items()}
         category = _get_category(table)
         patch_file = os.path.join(patch_dir, category, table + ".yaml")
 
@@ -798,10 +814,34 @@ class WorldDB:
         pk_cols = json.loads(meta["pk_columns"]) if meta else [table_name]
         sql_lines: list[str] = []
 
+        # Check if a locale table exists for this base table
+        locale_table = table_name + "_locale"
+        locale_meta = self._get_meta(locale_table)
+        locale_col_set: set[str] = set()
+        if locale_meta:
+            locale_col_defs = json.loads(locale_meta["column_defs"])
+            locale_col_set = {c["name"] for c in locale_col_defs
+                              if c["name"] != "locale"
+                              and c["name"] not in json.loads(locale_meta["pk_columns"])}
+
         for pk_key, fields in data.get("records", {}).items():
             if not isinstance(fields, dict):
                 continue
             pk_values = self._parse_pk_key(str(pk_key))
+
+            # Extract locale-suffixed fields before processing the base record
+            # {locale_code: {column: value}} grouped by locale
+            locale_data: dict[str, dict[str, str]] = {}
+            base_fields: dict[str, Any] = {}
+
+            for fk, fv in fields.items():
+                m = _LOCALE_SUFFIX_RE.match(fk)
+                if m and locale_meta:
+                    col_name, locale_code = m.group(1), m.group(2)
+                    if col_name in locale_col_set:
+                        locale_data.setdefault(locale_code, {})[col_name] = fv
+                        continue
+                base_fields[fk] = fv
 
             existing = None
             if meta and len(pk_values) == len(pk_cols):
@@ -813,7 +853,7 @@ class WorldDB:
 
             if existing:
                 set_parts = []
-                for fk, fv in fields.items():
+                for fk, fv in base_fields.items():
                     if fk in pk_cols:
                         continue
                     set_parts.append("`{}` = {}".format(
@@ -827,17 +867,41 @@ class WorldDB:
                         table_name, ", ".join(set_parts),
                         " AND ".join(where_parts)))
             else:
-                row_data = dict(fields)
+                row_data = dict(base_fields)
                 for i, pc in enumerate(pk_cols):
                     if pc not in row_data:
                         row_data[pc] = pk_values[i]
                 ins_cols = list(row_data.keys())
                 ins_vals = [self._sql_value(row_data[c]) for c in ins_cols]
                 sql_lines.append(
-                    "INSERT INTO `{}` ({}) VALUES ({});".format(
+                    "REPLACE INTO `{}` ({}) VALUES ({});".format(
                         table_name,
                         ", ".join("`{}`".format(c) for c in ins_cols),
                         ", ".join(ins_vals)))
+
+            # Generate locale table SQL
+            if locale_data and locale_meta:
+                locale_pk_cols = json.loads(locale_meta["pk_columns"])
+                for locale_code, loc_fields in sorted(locale_data.items()):
+                    loc_cols = list(loc_fields.keys())
+                    # Build full row: PK columns + locale + data columns
+                    all_cols = []
+                    all_vals = []
+                    for i, pc in enumerate(locale_pk_cols):
+                        if pc == "locale":
+                            all_cols.append("locale")
+                            all_vals.append(self._sql_value(locale_code))
+                        elif i < len(pk_values):
+                            all_cols.append(pc)
+                            all_vals.append(self._sql_value(pk_values[i]))
+                    for col in loc_cols:
+                        all_cols.append(col)
+                        all_vals.append(self._sql_value(loc_fields[col]))
+                    sql_lines.append(
+                        "REPLACE INTO `{}` ({}) VALUES ({});".format(
+                            locale_table,
+                            ", ".join("`{}`".format(c) for c in all_cols),
+                            ", ".join(all_vals)))
 
         for pk_key in data.get("_deleted", []):
             pk_values = self._parse_pk_key(str(pk_key))
@@ -911,7 +975,7 @@ class WorldDB:
                 ins_cols = [c for c in row_data.keys()]
                 ins_vals = [self._sql_value(row_data[c]) for c in ins_cols]
                 sql_lines.append(
-                    "INSERT INTO `{}` ({}) VALUES ({});".format(
+                    "REPLACE INTO `{}` ({}) VALUES ({});".format(
                         table_name,
                         ", ".join("`{}`".format(c) for c in ins_cols),
                         ", ".join(ins_vals)))

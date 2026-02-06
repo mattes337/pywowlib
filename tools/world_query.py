@@ -147,8 +147,9 @@ def cmd_modify(args, db: WorldDB):
     # Use -- as separator, or infer from schema
     pk_values, fields = _split_modify_args(args, db)
 
+    locale = getattr(args, "locale", None)
     db.write_patch(args.table, "modify", pk_values, fields,
-                   patch_dir=patch_dir)
+                   patch_dir=patch_dir, locale=locale)
     pk_str = "|".join(str(v) for v in pk_values)
     print("Wrote patch: {} record {} -> {}".format(
         args.table, pk_str,
@@ -177,8 +178,9 @@ def cmd_add(args, db: WorldDB):
             print("ERROR: New record must include PK field '{}'".format(pc))
             sys.exit(1)
 
+    locale = getattr(args, "locale", None)
     db.write_patch(args.table, "add", pk_values, fields,
-                   patch_dir=patch_dir)
+                   patch_dir=patch_dir, locale=locale)
     pk_str = "|".join(str(v) for v in pk_values)
     print("Wrote patch: {} new record {} -> {}".format(
         args.table, pk_str,
@@ -349,6 +351,8 @@ def main():
     p_modify = subparsers.add_parser("modify", parents=[global_parser],
         help="Write field changes to patch YAML")
     p_modify.add_argument("table", help="Table name")
+    p_modify.add_argument("--locale", default=None,
+                          help="Locale code (e.g. deDE) — appends _{locale} to field names")
     p_modify.add_argument("args_and_fields", nargs="+",
                           help="<pk> [<pk2> ...] [--] field=value [...]")
 
@@ -356,6 +360,8 @@ def main():
     p_add = subparsers.add_parser("add", parents=[global_parser],
         help="Add new record to patch YAML")
     p_add.add_argument("table", help="Table name")
+    p_add.add_argument("--locale", default=None,
+                       help="Locale code (e.g. deDE) — appends _{locale} to field names")
     p_add.add_argument("fields", nargs="+",
                        help="field=value pairs (must include PK fields)")
 

@@ -23,6 +23,9 @@ from typing import Any
 
 import yaml
 
+# Prefer C-based YAML loader (5-10x faster than pure Python SafeLoader)
+_yaml_loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -204,6 +207,16 @@ def _infer_types_from_schema(dbc_name: str, build: str = "3.3.5.12340") -> dict[
 # ---------------------------------------------------------------------------
 _SAFE_IDENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 
+# Known WoW locale codes
+_LOCALE_CODES = frozenset([
+    "enUS", "koKR", "frFR", "deDE", "enCN", "enTW", "esES", "esMX",
+    "ruRU", "jaJP", "ptPT", "itIT", "zhCN", "zhTW",
+])
+
+_LOCALE_SUFFIX_RE = re.compile(
+    r'^(.+_lang)_(' + '|'.join(_LOCALE_CODES) + r')$'
+)
+
 
 def _quote(name: str) -> str:
     """Quote a SQLite identifier."""
@@ -257,7 +270,7 @@ class DBCDB:
         Returns the number of records imported.
         """
         with open(yaml_path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
+            data = yaml.load(f, Loader=_yaml_loader)
 
         if not data or "_meta" not in data:
             return 0
@@ -441,7 +454,7 @@ class DBCDB:
                 yaml_path = os.path.join(root, fname)
                 try:
                     with open(yaml_path, "r", encoding="utf-8") as f:
-                        data = yaml.safe_load(f)
+                        data = yaml.load(f, Loader=_yaml_loader)
 
                     if not data:
                         continue
@@ -675,10 +688,55 @@ class DBCDB:
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------------------
+    # Locale expansion — convert suffixed fields to locstring dicts
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _expand_locale_fields(records: dict):
+        """Expand locale-suffixed fields into locstring dicts in-place.
+
+        E.g. Name_lang_deDE: "Feuerball" → Name_lang: {enUS: ..., deDE: "Feuerball"}
+
+        Plain string values on the base field are treated as enUS.
+        """
+        for rec_id, rec in records.items():
+            if not isinstance(rec, dict):
+                continue
+            # Collect locale-suffixed keys
+            grouped: dict[str, dict[str, str]] = {}  # base_field -> {locale: value}
+            suffixed_keys: list[str] = []
+            for key in list(rec.keys()):
+                m = _LOCALE_SUFFIX_RE.match(key)
+                if m:
+                    base_field, locale = m.group(1), m.group(2)
+                    grouped.setdefault(base_field, {})[locale] = rec[key]
+                    suffixed_keys.append(key)
+
+            if not grouped:
+                continue
+
+            # Remove suffixed keys
+            for key in suffixed_keys:
+                del rec[key]
+
+            # Merge into base field dicts
+            for base_field, locale_values in grouped.items():
+                existing = rec.get(base_field)
+                if isinstance(existing, dict):
+                    # Already a locstring dict — merge in
+                    existing.update(locale_values)
+                elif isinstance(existing, str):
+                    # Plain string → treat as enUS, merge
+                    rec[base_field] = {"enUS": existing, **locale_values}
+                else:
+                    # No base field yet — just set the locale dict
+                    rec[base_field] = locale_values
+
+    # ------------------------------------------------------------------
     # Modify — write to .patch/ YAML
     # ------------------------------------------------------------------
     def write_patch(self, patch_dir: str, table: str, action: str,
-                    record_id: int, fields: dict | None = None):
+                    record_id: int, fields: dict | None = None,
+                    locale: str | None = None):
         """Write a modification to the patch YAML file.
 
         Args:
@@ -687,6 +745,8 @@ class DBCDB:
             action: "modify", "add", or "remove"
             record_id: Record ID
             fields: Field values (required for modify/add)
+            locale: If set, append _{locale} to locstring field names
+                    (fields ending in _lang)
         """
         category = _get_category(table)
         patch_file = os.path.join(patch_dir, category, table + ".yaml")
@@ -694,7 +754,7 @@ class DBCDB:
         # Load existing patch file or create new
         if os.path.isfile(patch_file):
             with open(patch_file, "r", encoding="utf-8") as f:
-                patch_data = yaml.safe_load(f) or {}
+                patch_data = yaml.load(f, Loader=_yaml_loader) or {}
         else:
             patch_data = {}
 
@@ -704,6 +764,16 @@ class DBCDB:
             patch_data["records"] = {}
         if "_deleted" not in patch_data:
             patch_data["_deleted"] = []
+
+        # Rewrite locstring field names when locale is specified
+        if locale and fields:
+            rewritten = {}
+            for k, v in fields.items():
+                if k.endswith("_lang"):
+                    rewritten["{}_{}".format(k, locale)] = v
+                else:
+                    rewritten[k] = v
+            fields = rewritten
 
         if action == "modify" or action == "add":
             if fields is None:
@@ -733,34 +803,22 @@ class DBCDB:
     # ------------------------------------------------------------------
     # Merge — combine original + patch YAML files
     # ------------------------------------------------------------------
-    def merge_yaml(self, original_path: str, patch_path: str,
-                   output_path: str):
-        """Merge an original YAML file with a patch YAML file.
+    def merge_yaml_data(self, original_path: str, patch_path: str) -> dict:
+        """Merge original + patch YAML files and return the merged dict.
 
-        1. Load original (full records dict)
-        2. Load patch (partial records + _deleted)
-        3. For each record in patch: original[id].update(patch_fields)
-        4. For each ID in _deleted: del original[id]
-        5. Write merged YAML
+        Does NOT write to disk. Caller can write to YAML or convert directly.
         """
         with open(original_path, "r", encoding="utf-8") as f:
-            original = yaml.safe_load(f)
+            original = yaml.load(f, Loader=_yaml_loader)
 
         with open(patch_path, "r", encoding="utf-8") as f:
-            patch = yaml.safe_load(f)
+            patch = yaml.load(f, Loader=_yaml_loader)
 
         if not original or not patch:
-            # Nothing to merge — just copy original
-            if original:
-                os.makedirs(os.path.dirname(output_path), exist_ok=True)
-                with open(output_path, "w", encoding="utf-8") as f:
-                    yaml.dump(original, f, default_flow_style=False,
-                              allow_unicode=True, sort_keys=False, width=120)
-            return
+            return original or {}
 
         records = original.get("records", {})
 
-        # Apply modifications and additions
         for rec_id, patch_fields in patch.get("records", {}).items():
             if not isinstance(patch_fields, dict):
                 continue
@@ -769,31 +827,38 @@ class DBCDB:
             else:
                 records[rec_id] = patch_fields
 
-        # Apply deletions
         for del_id in patch.get("_deleted", []):
             records.pop(del_id, None)
 
+        self._expand_locale_fields(records)
+
         original["records"] = records
-        # Update record count in meta
         if "_meta" in original:
             original["_meta"]["record_count"] = len(records)
 
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        with open(output_path, "w", encoding="utf-8") as f:
-            yaml.dump(original, f, default_flow_style=False,
-                      allow_unicode=True, sort_keys=False, width=120)
+        return original
+
+    def merge_yaml(self, original_path: str, patch_path: str,
+                   output_path: str):
+        """Merge original + patch YAML files, write result to output_path."""
+        merged = self.merge_yaml_data(original_path, patch_path)
+        if merged:
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            with open(output_path, "w", encoding="utf-8") as f:
+                yaml.dump(merged, f, default_flow_style=False,
+                          allow_unicode=True, sort_keys=False, width=120)
 
     def merge_directory(self, original_dir: str,
                         patch_dirs: str | list[str],
-                        output_dir: str) -> dict:
-        """Merge all YAML files from original + patch directories.
+                        output_dir: str,
+                        patched_only: bool = False) -> dict:
+        """Merge YAML files from original + patch directories.
 
         patch_dirs can be a single path (str) or list of paths applied
         in order (for layered patches). Later layers override earlier ones.
 
-        For YAML files that exist in both original and patch: merge them.
-        For YAML files only in original: copy to output.
-        For YAML files only in patch (new tables): copy to output.
+        If patched_only is True, only files with patches are output (fast mode).
+        Otherwise, unmodified originals are also copied to output_dir.
 
         Returns {table_name: action, ...}.
         """
@@ -828,20 +893,20 @@ class DBCDB:
 
         results = {}
 
-        # Process all original files
+        # Process original files that have patches
         for dbc_name, orig_path in sorted(orig_files.items()):
-            category = _get_category(dbc_name)
-            out_path = os.path.join(output_dir, category, dbc_name + ".yaml")
-
             if dbc_name in patch_files:
+                category = _get_category(dbc_name)
+                out_path = os.path.join(output_dir, category, dbc_name + ".yaml")
                 # Merge original + all patch layers in sequence
                 self.merge_yaml(orig_path, patch_files[dbc_name][0], out_path)
                 for extra_patch in patch_files[dbc_name][1:]:
                     self.merge_yaml(out_path, extra_patch, out_path)
                 results[dbc_name] = "merged"
                 print("  MERGE {:40s}".format(dbc_name))
-            else:
-                # Copy original as-is
+            elif not patched_only:
+                category = _get_category(dbc_name)
+                out_path = os.path.join(output_dir, category, dbc_name + ".yaml")
                 os.makedirs(os.path.dirname(out_path), exist_ok=True)
                 shutil.copy2(orig_path, out_path)
                 results[dbc_name] = "copied"
