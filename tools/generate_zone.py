@@ -40,10 +40,29 @@ from world_builder.wmo_catalog import WMOCatalog
 
 
 # ---------------------------------------------------------------------------
-# Constants
+# Client path resolution
 # ---------------------------------------------------------------------------
 
-DEFAULT_WOW_DATA = "G:\\WoW AzerothCore\\Data"
+
+def _get_client_path():
+    """Get WoW client path from env var, docker/.env, or hardcoded default."""
+    path = os.environ.get('WOW_CLIENT_DATA')
+    if path:
+        return path
+    # pywowlib/tools/generate_zone.py -> pywowlib/tools -> pywowlib -> project root
+    project_root = os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))))
+    env_file = os.path.join(project_root, 'docker', '.env')
+    if os.path.isfile(env_file):
+        with open(env_file, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith('WOW_CLIENT_DATA='):
+                    return line.split('=', 1)[1].strip()
+    return 'G:/WoW AzerothCore'
+
+
+DEFAULT_WOW_DATA = os.path.join(_get_client_path(), "Data")
 
 
 # ---------------------------------------------------------------------------
