@@ -1,0 +1,29 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+ENV PYTHONUNBUFFERED=1
+
+# Install PyTorch CPU-only and dependencies
+RUN pip install --no-cache-dir \
+    torch --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir numpy mpyq Pillow
+
+# Copy project source
+COPY world_builder/ /app/world_builder/
+COPY tools/generate_zone.py /app/tools/generate_zone.py
+COPY tools/mpq_packer.py /app/tools/mpq_packer.py
+COPY file_formats/ /app/file_formats/
+COPY examples/ /app/examples/
+
+# Volumes:
+#   /data     -> WoW Data directory (read-only, for edge extraction)
+#   /output   -> Output directory (patch-4.MPQ written here)
+#   /spec     -> Spec JSON directory (optional, specs also in /app/examples/)
+
+# Default: generate the elwynn_nordic example
+CMD ["python", "tools/generate_zone.py", \
+     "/app/examples/elwynn_nordic.json", \
+     "--output", "/output", \
+     "--wow-data", "/data", \
+     "--no-copy"]

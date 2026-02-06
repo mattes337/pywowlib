@@ -1,0 +1,94 @@
+{
+  "name": "ElwynnRedesign",
+  "description": "Elwynn Forest reimagined as a Nordic fjord: pine forests, rocky ridges, a frozen pond, and a fortified Norse village where Goldshire once stood",
+  "archetype": "nordic_fjord",
+  "grid_size": [1, 1],
+  "base_coords": [31, 49],
+  "sea_level": 0.0,
+  "seed": 2026,
+
+  "style": {
+    "texture_theme": "nordic_fjord",
+    "building_style": "human_elwynn",
+    "vegetation_density": "moderate",
+    "atmosphere": "cold"
+  },
+
+  "features": [
+    {
+      "type": "forest",
+      "position": "center",
+      "name": "Frostpine Thicket",
+      "params": {"density": "dense", "radius": 0.20}
+    },
+    {
+      "type": "ridge",
+      "position": "northwest",
+      "name": "Stonewatch Spine",
+      "params": {"radius": 0.12, "elevation": 70, "direction": "north_south"}
+    },
+    {
+      "type": "pond",
+      "position": [0.35, 0.65],
+      "name": "Icemist Pool",
+      "params": {"radius": 0.05, "depth": 4}
+    },
+    {
+      "type": "village",
+      "position": [0.5, 0.6],
+      "name": "Nordhaven",
+      "params": {"radius": 0.08}
+    },
+    {
+      "type": "peak",
+      "position": "northeast",
+      "name": "Whitehorn Crag",
+      "params": {"elevation": 80, "radius": 0.08}
+    }
+  ],
+
+  "buildings": [
+    {
+      "type": "inn",
+      "position": [0.50, 0.60],
+      "rotation": 30,
+      "name": "The Frozen Flagon"
+    },
+    {
+      "type": "blacksmith",
+      "position": [0.53, 0.58],
+      "rotation": 120
+    },
+    {
+      "type": "guard_tower",
+      "position": [0.47, 0.63],
+      "rotation": 0
+    },
+    {
+      "type": "stable",
+      "position": [0.55, 0.62],
+      "rotation": 210
+    },
+    {
+      "type": "house",
+      "position": [0.48, 0.57],
+      "rotation": 70
+    },
+    {
+      "type": "farm",
+      "position": [0.56, 0.65],
+      "rotation": 160
+    }
+  ],
+
+  "roads": [
+    {
+      "name": "North Road",
+      "waypoints": [[0.1, 0.6], [0.3, 0.6], [0.5, 0.6], [0.9, 0.55]],
+      "width": 4.0,
+      "texture": "dirt"
+    }
+  ],
+
+  "water_regions": []
+}

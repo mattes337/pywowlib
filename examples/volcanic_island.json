@@ -1,0 +1,98 @@
+{
+  "name": "Ashfall Isle",
+  "description": "A volcanic island with a central caldera, scattered ruins, and a small coastal village",
+  "archetype": "volcanic_island",
+  "grid_size": [2, 2],
+  "base_coords": [32, 32],
+  "sea_level": 0.0,
+  "seed": 42,
+
+  "style": {
+    "texture_theme": "volcanic_island",
+    "building_style": "human_duskwood",
+    "vegetation_density": "sparse",
+    "atmosphere": "dark"
+  },
+
+  "features": [
+    {
+      "type": "volcano",
+      "position": "center",
+      "name": "Ashfall Caldera",
+      "params": {"rim_height": 150, "has_lava": true}
+    },
+    {
+      "type": "village",
+      "position": [0.3, 0.7],
+      "name": "Ember's Rest",
+      "params": {"radius": 0.08}
+    },
+    {
+      "type": "lake",
+      "position": "south",
+      "name": "Obsidian Pool",
+      "params": {"radius": 0.06, "depth": 6}
+    },
+    {
+      "type": "forest",
+      "position": "northeast",
+      "name": "Charwood Grove",
+      "params": {"density": "moderate", "radius": 0.12}
+    },
+    {
+      "type": "beach",
+      "position": "southwest",
+      "name": "Ashen Shore",
+      "params": {"radius": 0.10}
+    },
+    {
+      "type": "ruins",
+      "position": [0.7, 0.3],
+      "name": "Scorched Sanctum",
+      "params": {"radius": 0.06}
+    }
+  ],
+
+  "buildings": [
+    {
+      "type": "inn",
+      "position": [0.3, 0.7],
+      "rotation": 45,
+      "name": "The Smoldering Hearth"
+    },
+    {
+      "type": "blacksmith",
+      "position": [0.32, 0.68],
+      "rotation": 90
+    },
+    {
+      "type": "guard_tower",
+      "position": [0.28, 0.72],
+      "rotation": 0
+    },
+    {
+      "type": "farm",
+      "position": [0.35, 0.72],
+      "rotation": 200,
+      "variant": "abandoned"
+    }
+  ],
+
+  "roads": [
+    {
+      "name": "Ember Road",
+      "waypoints": [[0.1, 0.7], [0.3, 0.7], [0.5, 0.65], [0.9, 0.6]],
+      "width": 4.0,
+      "texture": "dirt"
+    }
+  ],
+
+  "water_regions": [
+    {
+      "name": "Coastal Waters",
+      "type": "ocean",
+      "level": 0.0,
+      "bounds": [0.0, 0.0, 1.0, 0.15]
+    }
+  ]
+}

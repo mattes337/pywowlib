@@ -1152,12 +1152,25 @@ class WorldState:
                     scale_int = int(raw_scale * 1024)
                 else:
                     scale_int = int(raw_scale)
+                # Compute bounding extents from footprint if available
+                extents = None
+                fp = w.get('footprint')
+                pos = w['position']
+                if fp and len(fp) >= 2:
+                    hw = fp[0] / 2.0  # half width
+                    hd = fp[1] / 2.0  # half depth
+                    half_ext = max(hw, hd)
+                    extents = (
+                        (pos[0] - half_ext, pos[1] - half_ext, pos[2]),
+                        (pos[0] + half_ext, pos[1] + half_ext, pos[2] + 40.0),
+                    )
                 try:
                     adt_bytes = add_wmo_to_adt(
                         adt_bytes,
                         wmo_path=w['model'],
                         position=w['position'],
                         rotation=w.get('rotation', (0, 0, 0)),
+                        extents=extents,
                         unique_id=w.get('unique_id', 0),
                         flags=w.get('flags', 0),
                         doodad_set=w.get('doodad_set', 0),

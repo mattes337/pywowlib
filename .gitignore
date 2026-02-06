@@ -15,3 +15,9 @@ blp/PNG2BLP/blp.html
 *.pdb
 blp/.idea/
 blp/BLP2PNG/native/.idea/
+dbc.db
+nul
+output/
+exports/
+plans/
+tools/extractors/output/

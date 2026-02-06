@@ -36,7 +36,7 @@ DB_PATH = os.environ.get(
 )
 
 ORIGINAL_DBC_DIR = os.path.join(_PROJECT_ROOT, ".original", "client", "dbc")
-PATCH_DBC_DIR = os.path.join(_PROJECT_ROOT, ".patch", "client", "dbc")
+PATCH_DBC_DIR = os.path.join(_PROJECT_ROOT, ".patch", "dev", "client", "dbc")
 MERGED_DBC_DIR = os.path.join(_PROJECT_ROOT, ".merged", "client", "dbc")
 
 # ---------------------------------------------------------------------------
@@ -783,9 +783,13 @@ class DBCDB:
             yaml.dump(original, f, default_flow_style=False,
                       allow_unicode=True, sort_keys=False, width=120)
 
-    def merge_directory(self, original_dir: str, patch_dir: str,
+    def merge_directory(self, original_dir: str,
+                        patch_dirs: str | list[str],
                         output_dir: str) -> dict:
         """Merge all YAML files from original + patch directories.
+
+        patch_dirs can be a single path (str) or list of paths applied
+        in order (for layered patches). Later layers override earlier ones.
 
         For YAML files that exist in both original and patch: merge them.
         For YAML files only in original: copy to output.
@@ -793,9 +797,14 @@ class DBCDB:
 
         Returns {table_name: action, ...}.
         """
+        import shutil
+
         original_dir = os.path.normpath(original_dir)
-        patch_dir = os.path.normpath(patch_dir)
         output_dir = os.path.normpath(output_dir)
+
+        # Normalize to list
+        if isinstance(patch_dirs, str):
+            patch_dirs = [patch_dirs]
 
         # Collect all original YAML files
         orig_files: dict[str, str] = {}  # dbc_name -> full path
@@ -805,13 +814,17 @@ class DBCDB:
                     dbc_name = os.path.splitext(fname)[0]
                     orig_files[dbc_name] = os.path.join(root, fname)
 
-        # Collect all patch YAML files
-        patch_files: dict[str, str] = {}  # dbc_name -> full path
-        for root, _dirs, files in os.walk(patch_dir):
-            for fname in files:
-                if fname.endswith(".yaml"):
-                    dbc_name = os.path.splitext(fname)[0]
-                    patch_files[dbc_name] = os.path.join(root, fname)
+        # Collect patch YAML files from all layers (in order)
+        # dbc_name -> [path1, path2, ...] in layer order
+        patch_files: dict[str, list[str]] = {}
+        for pdir in patch_dirs:
+            pdir = os.path.normpath(pdir)
+            for root, _dirs, files in os.walk(pdir):
+                for fname in files:
+                    if fname.endswith(".yaml"):
+                        dbc_name = os.path.splitext(fname)[0]
+                        patch_files.setdefault(dbc_name, []).append(
+                            os.path.join(root, fname))
 
         results = {}
 
@@ -821,26 +834,29 @@ class DBCDB:
             out_path = os.path.join(output_dir, category, dbc_name + ".yaml")
 
             if dbc_name in patch_files:
-                # Merge original + patch
-                self.merge_yaml(orig_path, patch_files[dbc_name], out_path)
+                # Merge original + all patch layers in sequence
+                self.merge_yaml(orig_path, patch_files[dbc_name][0], out_path)
+                for extra_patch in patch_files[dbc_name][1:]:
+                    self.merge_yaml(out_path, extra_patch, out_path)
                 results[dbc_name] = "merged"
                 print("  MERGE {:40s}".format(dbc_name))
             else:
                 # Copy original as-is
                 os.makedirs(os.path.dirname(out_path), exist_ok=True)
-                import shutil
                 shutil.copy2(orig_path, out_path)
                 results[dbc_name] = "copied"
 
         # Process patch-only files (new tables)
-        for dbc_name, patch_path in sorted(patch_files.items()):
-            if dbc_name in orig_files:
-                continue  # already handled above
+        all_patch_names = set(patch_files.keys())
+        for dbc_name in sorted(all_patch_names - set(orig_files.keys())):
+            paths = patch_files[dbc_name]
             category = _get_category(dbc_name)
             out_path = os.path.join(output_dir, category, dbc_name + ".yaml")
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
-            import shutil
-            shutil.copy2(patch_path, out_path)
+            # Copy first layer, merge subsequent
+            shutil.copy2(paths[0], out_path)
+            for extra_patch in paths[1:]:
+                self.merge_yaml(out_path, extra_patch, out_path)
             results[dbc_name] = "new"
             print("  NEW   {:40s}".format(dbc_name))
 

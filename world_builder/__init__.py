@@ -68,6 +68,9 @@ from .zone_editor import (load_zone_from_adts, load_single_adt,
                            add_doodads_in_area, remove_doodads_in_area,
                            world_to_norm, norm_to_world, norm_to_tile,
                            tile_to_norm, export_for_adt_composer)
+from .zone_spec import (ZoneSpec, FEATURE_TYPES, BUILDING_TYPES,
+                         BUILDING_STYLES)
+from .wmo_catalog import WMOCatalog
 
 
 def build_zone(name, output_dir, coords=None, heightmap=None, texture_paths=None,

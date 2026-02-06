@@ -35,7 +35,7 @@ SQL_DIR = os.path.join(
     _PROJECT_ROOT, ".original", "server", "data", "sql", "base", "db_world",
 )
 
-PATCH_DB_DIR = os.path.join(_PROJECT_ROOT, ".patch", "database")
+PATCH_DB_DIR = os.path.join(_PROJECT_ROOT, ".patch", "dev", "database")
 MERGED_DB_DIR = os.path.join(_PROJECT_ROOT, ".merged", "database")
 
 # ---------------------------------------------------------------------------
@@ -693,42 +693,164 @@ class WorldDB:
     # ------------------------------------------------------------------
     # Generate SQL — convert YAML patches to MySQL SQL
     # ------------------------------------------------------------------
-    def patches_to_sql(self, patch_dir: str = PATCH_DB_DIR,
+    def patches_to_sql(self, patch_dirs: str | list[str] = PATCH_DB_DIR,
                        output_dir: str = MERGED_DB_DIR) -> list[str]:
         """Convert .patch/database/**/*.yaml → .merged/database/*.sql.
 
+        patch_dirs can be a single path (str) or list of paths applied
+        in order (for layered patches). When multiple layers modify the
+        same table, records are merged in layer order (later wins).
+
         Returns list of generated SQL file paths.
         """
-        patch_dir = os.path.normpath(patch_dir)
+        # Normalize to list
+        if isinstance(patch_dirs, str):
+            patch_dirs = [patch_dirs]
+
         output_dir = os.path.normpath(output_dir)
         os.makedirs(output_dir, exist_ok=True)
+
+        # Collect YAML files from all layers, grouped by table name
+        # table_name -> [yaml_path1, yaml_path2, ...] in layer order
+        table_yamls: dict[str, list[str]] = {}
+        for pdir in patch_dirs:
+            pdir = os.path.normpath(pdir)
+            for root, _dirs, files in os.walk(pdir):
+                for fname in sorted(files):
+                    if not fname.endswith(".yaml"):
+                        continue
+                    table_name = os.path.splitext(fname)[0]
+                    table_yamls.setdefault(table_name, []).append(
+                        os.path.join(root, fname))
+
         generated: list[str] = []
         file_index = 1
 
-        for root, _dirs, files in os.walk(patch_dir):
-            for fname in sorted(files):
-                if not fname.endswith(".yaml"):
+        for table_name in sorted(table_yamls.keys()):
+            yaml_paths = table_yamls[table_name]
+            try:
+                # Merge YAML data from all layers for this table
+                merged_data = self._merge_yaml_layers(yaml_paths)
+                if not merged_data:
                     continue
 
-                yaml_path = os.path.join(root, fname)
-                table_name = os.path.splitext(fname)[0]
-
-                try:
-                    sql_lines = self._yaml_to_sql(yaml_path, table_name)
-                    if sql_lines:
-                        out_name = "{:02d}_{}.sql".format(file_index, table_name)
-                        out_path = os.path.join(output_dir, out_name)
-                        with open(out_path, "w", encoding="utf-8") as f:
-                            f.write("USE `acore_world`;\n\n")
-                            f.write("\n".join(sql_lines))
-                            f.write("\n")
-                        generated.append(out_path)
-                        print("  Generated: {}".format(out_name))
-                        file_index += 1
-                except Exception as e:
-                    print("  FAIL {:40s} -- {}".format(fname, e))
+                sql_lines = self._merged_data_to_sql(merged_data, table_name)
+                if sql_lines:
+                    out_name = "{:02d}_{}.sql".format(file_index, table_name)
+                    out_path = os.path.join(output_dir, out_name)
+                    with open(out_path, "w", encoding="utf-8") as f:
+                        f.write("USE `acore_world`;\n\n")
+                        f.write("\n".join(sql_lines))
+                        f.write("\n")
+                    generated.append(out_path)
+                    print("  Generated: {}".format(out_name))
+                    file_index += 1
+            except Exception as e:
+                print("  FAIL {:40s} -- {}".format(table_name, e))
 
         return generated
+
+    @staticmethod
+    def _merge_yaml_layers(yaml_paths: list[str]) -> dict:
+        """Merge YAML patch data from multiple layers.
+
+        Records are merged in order — later layers override earlier ones
+        on a per-field basis. _deleted lists are accumulated.
+        """
+        merged_records: dict = {}
+        deleted_set: set = set()
+
+        for yaml_path in yaml_paths:
+            with open(yaml_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+            if not data:
+                continue
+
+            for pk_key, fields in data.get("records", {}).items():
+                if not isinstance(fields, dict):
+                    continue
+                # Un-delete if a later layer re-adds a record
+                deleted_set.discard(pk_key)
+                if pk_key in merged_records:
+                    merged_records[pk_key].update(fields)
+                else:
+                    merged_records[pk_key] = dict(fields)
+
+            for del_key in data.get("_deleted", []):
+                deleted_set.add(del_key)
+                merged_records.pop(del_key, None)
+
+        if not merged_records and not deleted_set:
+            return {}
+
+        result: dict = {}
+        if merged_records:
+            result["records"] = merged_records
+        if deleted_set:
+            result["_deleted"] = sorted(deleted_set,
+                                        key=lambda x: str(x))
+        return result
+
+    def _merged_data_to_sql(self, data: dict,
+                            table_name: str) -> list[str]:
+        """Convert pre-merged YAML data dict to SQL statements."""
+        meta = self._get_meta(table_name)
+        pk_cols = json.loads(meta["pk_columns"]) if meta else [table_name]
+        sql_lines: list[str] = []
+
+        for pk_key, fields in data.get("records", {}).items():
+            if not isinstance(fields, dict):
+                continue
+            pk_values = self._parse_pk_key(str(pk_key))
+
+            existing = None
+            if meta and len(pk_values) == len(pk_cols):
+                typed_pks = self._type_pk_values(pk_values, pk_cols, meta)
+                try:
+                    existing = self.lookup(table_name, *typed_pks)
+                except Exception:
+                    pass
+
+            if existing:
+                set_parts = []
+                for fk, fv in fields.items():
+                    if fk in pk_cols:
+                        continue
+                    set_parts.append("`{}` = {}".format(
+                        fk, self._sql_value(fv)))
+                if set_parts:
+                    where_parts = []
+                    for i, pc in enumerate(pk_cols):
+                        where_parts.append("`{}` = {}".format(
+                            pc, self._sql_value(pk_values[i])))
+                    sql_lines.append("UPDATE `{}` SET {} WHERE {};".format(
+                        table_name, ", ".join(set_parts),
+                        " AND ".join(where_parts)))
+            else:
+                row_data = dict(fields)
+                for i, pc in enumerate(pk_cols):
+                    if pc not in row_data:
+                        row_data[pc] = pk_values[i]
+                ins_cols = list(row_data.keys())
+                ins_vals = [self._sql_value(row_data[c]) for c in ins_cols]
+                sql_lines.append(
+                    "INSERT INTO `{}` ({}) VALUES ({});".format(
+                        table_name,
+                        ", ".join("`{}`".format(c) for c in ins_cols),
+                        ", ".join(ins_vals)))
+
+        for pk_key in data.get("_deleted", []):
+            pk_values = self._parse_pk_key(str(pk_key))
+            where_parts = []
+            for i, pc in enumerate(pk_cols):
+                if i < len(pk_values):
+                    where_parts.append("`{}` = {}".format(
+                        pc, self._sql_value(pk_values[i])))
+            if where_parts:
+                sql_lines.append("DELETE FROM `{}` WHERE {};".format(
+                    table_name, " AND ".join(where_parts)))
+
+        return sql_lines
 
     def _yaml_to_sql(self, yaml_path: str, table_name: str) -> list[str]:
         """Convert one YAML patch file to SQL statements."""

@@ -186,20 +186,28 @@ def cmd_remove(args, db: DBCDB):
 
 def cmd_merge(args, db: DBCDB):
     original_dir = args.original or ORIGINAL_DBC_DIR
-    patch_dir = args.patches or PATCH_DBC_DIR
     output_dir = args.output or MERGED_DBC_DIR
 
-    if not os.path.isdir(patch_dir):
-        print("No patch directory: {}".format(patch_dir))
+    # Support multi-layer: --patch-dirs dir1 dir2 dir3
+    # Falls back to single --patches for backward compat
+    patch_dirs = args.patch_dirs if args.patch_dirs else \
+        [args.patches or PATCH_DBC_DIR]
+
+    # Filter to existing directories
+    patch_dirs = [d for d in patch_dirs if os.path.isdir(d)]
+    if not patch_dirs:
+        print("No patch directories found")
         return
 
     print("Merging DBC YAML:")
     print("  Original: {}".format(original_dir))
-    print("  Patches:  {}".format(patch_dir))
+    for i, d in enumerate(patch_dirs):
+        print("  Patches{}: {}".format(
+            " [{}]".format(i + 1) if len(patch_dirs) > 1 else "", d))
     print("  Output:   {}".format(output_dir))
     print()
 
-    results = db.merge_directory(original_dir, patch_dir, output_dir)
+    results = db.merge_directory(original_dir, patch_dirs, output_dir)
 
     merged = sum(1 for v in results.values() if v == "merged")
     copied = sum(1 for v in results.values() if v == "copied")
@@ -322,6 +330,8 @@ def main():
     # -- merge --
     p_merge = subparsers.add_parser("merge", parents=[global_parser],
         help="Merge .original/ + .patch/ YAML files")
+    p_merge.add_argument("--patch-dirs", nargs="+", default=None,
+                         help="Patch directories in layer order (for layered merge)")
     p_merge.add_argument("--output", default=None,
                          help="Output directory (default: .merged/client/dbc)")
 

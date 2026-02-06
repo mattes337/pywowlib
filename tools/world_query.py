@@ -198,19 +198,27 @@ def cmd_remove(args, db: WorldDB):
 
 
 def cmd_generate_sql(args, db: WorldDB):
-    patch_dir = args.patches or PATCH_DB_DIR
     output_dir = args.output or MERGED_DB_DIR
 
-    if not os.path.isdir(patch_dir):
-        print("No patch directory: {}".format(patch_dir))
+    # Support multi-layer: --patch-dirs dir1 dir2 dir3
+    # Falls back to single --patches for backward compat
+    patch_dirs = args.patch_dirs if args.patch_dirs else \
+        [args.patches or PATCH_DB_DIR]
+
+    # Filter to existing directories
+    patch_dirs = [d for d in patch_dirs if os.path.isdir(d)]
+    if not patch_dirs:
+        print("No patch directories found")
         return
 
     print("Generating SQL from YAML patches:")
-    print("  Patches: {}".format(patch_dir))
+    for i, d in enumerate(patch_dirs):
+        print("  Patches{}: {}".format(
+            " [{}]".format(i + 1) if len(patch_dirs) > 1 else "", d))
     print("  Output:  {}".format(output_dir))
     print()
 
-    generated = db.patches_to_sql(patch_dir=patch_dir, output_dir=output_dir)
+    generated = db.patches_to_sql(patch_dirs=patch_dirs, output_dir=output_dir)
     print()
     print("{} SQL file(s) generated".format(len(generated)))
 
@@ -360,6 +368,8 @@ def main():
     # -- generate-sql --
     p_gensql = subparsers.add_parser("generate-sql", parents=[global_parser],
         help="Convert YAML patches to MySQL SQL files")
+    p_gensql.add_argument("--patch-dirs", nargs="+", default=None,
+                          help="Patch directories in layer order (for layered merge)")
     p_gensql.add_argument("--output", default=None,
                           help="Output directory")
 

@@ -139,9 +139,9 @@ def _compute_chunk_heights(heightmap, chunk_row, chunk_col):
     If heightmap is None, returns 145 zeros (flat terrain).
 
     The heightmap is resampled so that each ADT tile covers the full
-    input heightmap. The returned values are heights relative to 0
-    (the MCNK base height is set to 0 so MCVT values are absolute
-    world heights).
+    input heightmap. The returned values are absolute world heights;
+    the caller is responsible for subtracting the base height (pos_z)
+    before writing to MCVT.
     """
     if heightmap is None:
         return [0.0] * _HEIGHTS_PER_CHUNK
@@ -307,14 +307,18 @@ def _build_mcnk(chunk_row, chunk_col, tile_x, tile_y,
     heights = _compute_chunk_heights(heightmap, chunk_row, chunk_col)
     normals = _compute_normals(heights)
 
+    # Blizzard convention: pos_z stores the base height (first outer vertex)
+    # and MCVT values are relative offsets from pos_z.
+    base_z = heights[0] if heights else 0.0
+
     # -- Build interior sub-chunks into a buffer to calculate offsets --
     interior = BytesIO()
 
-    # MCVT (heights)
+    # MCVT (heights relative to pos_z)
     mcvt_offset = interior.tell()
     _write_chunk_header(interior, _MAGIC_MCVT, _MCVT_DATA_SIZE)
     for h in heights:
-        interior.write(struct.pack('<f', h))
+        interior.write(struct.pack('<f', h - base_z))
 
     # MCNR (normals) - data size is 435 (145*3), plus 13 padding bytes
     mcnr_offset = interior.tell()
@@ -335,7 +339,7 @@ def _build_mcnk(chunk_row, chunk_col, tile_x, tile_y,
         texture_id = layer_idx  # Index into MTEX string block
         flags = 0
         offset_in_mcal = 0
-        effect_id = 0xFFFFFFFF  # -1 = no ground effect (GroundEffectTexture DBC)
+        effect_id = 0  # 0 = no ground effect (GroundEffectTexture DBC)
 
         if layer_idx > 0:
             flags = 0x100  # use_alpha_map flag
@@ -400,7 +404,7 @@ def _build_mcnk(chunk_row, chunk_col, tile_x, tile_y,
     # Chunk world position
     pos_x = MAP_SIZE_MAX - (tile_y * TILE_SIZE) - (chunk_row * CHUNK_SIZE)
     pos_y = MAP_SIZE_MAX - (tile_x * TILE_SIZE) - (chunk_col * CHUNK_SIZE)
-    pos_z = 0.0  # Base height; MCVT values are relative to this
+    pos_z = base_z  # Base height; MCVT values are relative to this
 
     mcnk_hdr = BytesIO()
 
@@ -895,10 +899,10 @@ def read_adt(filepath, highres=False):
                 area_id = mcnk.area_id
 
             # --- Reconstruct heightmap from MCVT ---
-            # MCVT contains 145 height values: 9 outer rows interleaved
-            # with 8 inner rows. We extract only the outer 9x9 vertices
-            # to build the 129x129 tile heightmap.
+            # MCVT contains 145 height values relative to mcnk.position.z.
+            # We add pos_z to get absolute world heights.
             heights_145 = mcnk.mcvt.height
+            chunk_base_z = mcnk.position.z
             # The interleaved layout:
             #   row 0: 9 outer (indices 0..8)
             #   row 1: 8 inner (indices 9..16)
@@ -915,7 +919,7 @@ def read_adt(filepath, highres=False):
                     for col_idx in range(_OUTER_STRIDE):
                         global_col = chunk_col * 8 + col_idx
                         if global_row < 129 and global_col < 129:
-                            heightmap[global_row][global_col] = heights_145[idx]
+                            heightmap[global_row][global_col] = heights_145[idx] + chunk_base_z
                         idx += 1
                 else:
                     # Inner row: 8 vertices, skip them for heightmap
@@ -1297,9 +1301,18 @@ def add_wmo_to_adt(adt_bytes, wmo_path, position, rotation=(0, 0, 0),
 
     # Build bounding box
     if extents is None:
+        # Default to a reasonable bounding box around the position.
+        # A point-sized bounding box causes the client to cull the WMO.
+        # Use a 50-yard radius as a safe default for typical buildings.
         px, py, pz = position
-        ext_min = (px, py, pz)
-        ext_max = (px, py, pz)
+        _DEFAULT_HALF_EXTENT = 50.0
+        _DEFAULT_HEIGHT = 40.0
+        ext_min = (px - _DEFAULT_HALF_EXTENT,
+                   py - _DEFAULT_HALF_EXTENT,
+                   pz)
+        ext_max = (px + _DEFAULT_HALF_EXTENT,
+                   py + _DEFAULT_HALF_EXTENT,
+                   pz + _DEFAULT_HEIGHT)
     else:
         ext_min, ext_max = extents
 
