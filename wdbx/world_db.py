@@ -726,7 +726,8 @@ class WorldDB:
         output_dir = os.path.normpath(output_dir)
         os.makedirs(output_dir, exist_ok=True)
 
-        # Collect YAML files from all layers, grouped by table name
+        # Collect YAML files from all layers, grouped by table name.
+        # _meta.table_name in the YAML overrides the filename-derived name.
         # table_name -> [yaml_path1, yaml_path2, ...] in layer order
         table_yamls: dict[str, list[str]] = {}
         for pdir in patch_dirs:
@@ -735,9 +736,19 @@ class WorldDB:
                 for fname in sorted(files):
                     if not fname.endswith(".yaml"):
                         continue
+                    fpath = os.path.join(root, fname)
+                    # Resolve table name: prefer _meta.table_name over filename
                     table_name = os.path.splitext(fname)[0]
-                    table_yamls.setdefault(table_name, []).append(
-                        os.path.join(root, fname))
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            header = yaml.safe_load(f)
+                        if isinstance(header, dict):
+                            meta_tn = (header.get("_meta") or {}).get("table_name")
+                            if meta_tn:
+                                table_name = meta_tn
+                    except Exception:
+                        pass
+                    table_yamls.setdefault(table_name, []).append(fpath)
 
         generated: list[str] = []
         file_index = 1
