@@ -67,7 +67,7 @@ _COMPRESSION_MAP = {
 _BLP2_MAGIC = b'BLP2'
 _BLP2_HEADER_SIZE = 148
 _BLP2_TYPE = 1           # BLP2 type identifier
-_BLP2_COMP_DXT = 1       # compression type 1 = DXT
+_BLP2_COMP_DXT = 2       # compression type 2 = DXTC
 _BLP2_COMP_RAW = 3       # compression type 3 = uncompressed ARGB
 _BLP2_ALPHA_DEPTH = 8    # 8-bit alpha channel
 _BLP2_ALPHA_TYPE = 8     # BGRA type
