@@ -73,23 +73,40 @@ _BLP2_ALPHA_DEPTH = 8    # 8-bit alpha channel
 _BLP2_ALPHA_TYPE = 8     # BGRA type
 _BLP2_MIP_COUNT = 16     # mipmap offset/size array length
 
-# DXT alpha type values (stored at header offset 10)
+# BLPPixelFormat values (stored at header offset 0x0A / 10)
+# These define how pixel data is encoded
+_BLP2_PIXEL_DXT1 = 0
+_BLP2_PIXEL_DXT3 = 1
+_BLP2_PIXEL_ARGB8888 = 2
+_BLP2_PIXEL_ARGB1555 = 3
+_BLP2_PIXEL_ARGB4444 = 4
+_BLP2_PIXEL_RGB565 = 5
+_BLP2_PIXEL_A8 = 6
+_BLP2_PIXEL_DXT5 = 7
+_BLP2_PIXEL_UNSPECIFIED = 8
+
+# Legacy aliases for backward compatibility
 _BLP2_ALPHA_DXT1 = 0
 _BLP2_ALPHA_DXT3 = 1
 _BLP2_ALPHA_DXT5 = 7
 
 # Compression type name mapping for info display
 _COMPRESSION_NAMES = {
-    1: 'DXT',
+    1: 'Palette',
     2: 'DXT',
-    3: 'Uncompressed',
+    3: 'Uncompressed ARGB8888',
 }
 
 _ALPHA_TYPE_NAMES = {
     0: 'DXT1',
     1: 'DXT3',
+    2: 'ARGB8888',
+    3: 'ARGB1555',
+    4: 'ARGB4444',
+    5: 'RGB565',
+    6: 'A8',
     7: 'DXT5',
-    8: 'Uncompressed BGRA',
+    8: 'Unspecified',
 }
 
 
@@ -157,22 +174,57 @@ def read_blp(blp_path_or_data):
 
     mip_data = data[mip0_offset:mip0_offset + mip0_size]
 
-    # Decode based on compression type
-    if compression == _BLP2_COMP_RAW:
-        # Uncompressed BGRA
-        pixels = _decode_uncompressed(mip_data, width, height)
-    elif compression in (1, 2):
-        # DXT compressed
-        if alpha_type == _BLP2_ALPHA_DXT1:
+    # Decode based on compression type (colorEncoding)
+    # compression 1 = COLOR_PALETTE (indexed with 256-color palette)
+    # compression 2 = COLOR_DXT (DXTC compressed)
+    # compression 3 = COLOR_ARGB8888 (uncompressed ARGB8888)
+    
+    if compression == 1:
+        # Palette-based: read 256-color palette after header, then indexed pixels
+        palette_offset = _BLP2_HEADER_SIZE
+        palette = []
+        for i in range(256):
+            b = data[palette_offset + i * 4]
+            g = data[palette_offset + i * 4 + 1]
+            r = data[palette_offset + i * 4 + 2]
+            a = data[palette_offset + i * 4 + 3] if alpha_depth > 0 else 255
+            palette.append((r, g, b, a))
+        pixels = _decode_palette(mip_data, width, height, palette, alpha_depth, data, mip0_offset, mip0_size)
+        
+    elif compression == 2:
+        # DXTC compressed - preferredFormat indicates DXT type
+        if alpha_type == _BLP2_PIXEL_DXT1:
             pixels = _decode_dxt1(mip_data, width, height)
-        elif alpha_type == _BLP2_ALPHA_DXT3:
+        elif alpha_type == _BLP2_PIXEL_DXT3:
             pixels = _decode_dxt3(mip_data, width, height)
-        elif alpha_type == _BLP2_ALPHA_DXT5:
+        elif alpha_type == _BLP2_PIXEL_DXT5:
             pixels = _decode_dxt5(mip_data, width, height)
+        elif alpha_type == _BLP2_PIXEL_ARGB8888:
+            # Some files have compression=2 but ARGB8888 pixel format
+            pixels = _decode_uncompressed(mip_data, width, height)
+        elif alpha_type == _BLP2_PIXEL_UNSPECIFIED:
+            # Unspecified format with compression=2, try to determine from data size
+            expected_dxt1 = ((width + 3) // 4) * ((height + 3) // 4) * 8
+            expected_dxt5 = ((width + 3) // 4) * ((height + 3) // 4) * 16
+            expected_raw = width * height * 4
+            
+            if mip0_size == expected_dxt1:
+                pixels = _decode_dxt1(mip_data, width, height)
+            elif mip0_size == expected_dxt5:
+                pixels = _decode_dxt5(mip_data, width, height)
+            elif mip0_size >= expected_raw:
+                pixels = _decode_uncompressed(mip_data, width, height)
+            else:
+                # Default to DXT1 if we can't determine
+                pixels = _decode_dxt1(mip_data, width, height)
         else:
             raise ValueError(
-                "Unsupported DXT alpha type: {}".format(alpha_type)
+                "Unsupported pixel format: {} for compression 2".format(alpha_type)
             )
+            
+    elif compression == 3 or compression == _BLP2_COMP_RAW:
+        # Uncompressed ARGB8888
+        pixels = _decode_uncompressed(mip_data, width, height)
     else:
         raise ValueError(
             "Unsupported BLP2 compression type: {}".format(compression)
@@ -800,6 +852,55 @@ def _decode_dxt5(mip_data, width, height):
                         pixels[out_idx + 2] = b
                         pixels[out_idx + 3] = a
 
+    return pixels
+
+
+def _decode_palette(mip_data, width, height, palette, alpha_depth, full_data, mip_offset, mip_size):
+    """
+    Decode palette-indexed pixel data to RGBA bytes.
+    
+    The mip_data contains indices into the 256-color palette.
+    Alpha data follows the index data if alpha_depth > 0.
+    """
+    num_pixels = width * height
+    pixels = bytearray(num_pixels * 4)
+    
+    # Each pixel is a 1-byte index into the palette
+    for i in range(min(num_pixels, len(mip_data))):
+        idx = mip_data[i]
+        r, g, b, a = palette[idx]
+        pixels[i * 4] = r
+        pixels[i * 4 + 1] = g
+        pixels[i * 4 + 2] = b
+        pixels[i * 4 + 3] = a
+    
+    # Handle separate alpha data if present
+    if alpha_depth > 0:
+        alpha_offset = num_pixels  # Alpha data starts after index data
+        if alpha_depth == 8:
+            # One byte per pixel for alpha
+            for i in range(min(num_pixels, len(mip_data) - alpha_offset)):
+                if alpha_offset + i < len(mip_data):
+                    pixels[i * 4 + 3] = mip_data[alpha_offset + i]
+        elif alpha_depth == 1:
+            # 1 bit per pixel, packed 8 per byte
+            for i in range(num_pixels):
+                byte_idx = alpha_offset + (i // 8)
+                if byte_idx < len(mip_data):
+                    bit_idx = i % 8
+                    alpha = 255 if (mip_data[byte_idx] >> bit_idx) & 1 else 0
+                    pixels[i * 4 + 3] = alpha
+        elif alpha_depth == 4:
+            # 4 bits per pixel, packed 2 per byte
+            for i in range(num_pixels):
+                byte_idx = alpha_offset + (i // 2)
+                if byte_idx < len(mip_data):
+                    if i % 2 == 0:
+                        alpha = (mip_data[byte_idx] & 0x0F) * 17  # 0-15 -> 0-255
+                    else:
+                        alpha = ((mip_data[byte_idx] >> 4) & 0x0F) * 17
+                    pixels[i * 4 + 3] = alpha
+    
     return pixels
 
 

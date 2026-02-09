@@ -266,26 +266,61 @@ def cmd_merge_to_dbc(args, db: DBCDB):
                     patch_files.setdefault(dbc_name, []).append(
                         os.path.join(root, fname))
 
+    # Collect pre-built .dbc files from sibling dbc_binary/ directories
+    # (produced by pack-mpq.py). These avoid loading huge originals like
+    # Spell.yaml (163 MB, 70K records) into memory.
+    prebuilt_dbc = {}
+    for pdir in patch_dirs:
+        binary_dir = os.path.join(os.path.dirname(pdir), "dbc_binary")
+        if os.path.isdir(binary_dir):
+            for fname in os.listdir(binary_dir):
+                if fname.endswith(".dbc"):
+                    dbc_name = os.path.splitext(fname)[0]
+                    prebuilt_dbc[dbc_name] = os.path.join(binary_dir, fname)
+
     os.makedirs(output_dir, exist_ok=True)
     count = 0
 
     for dbc_name in sorted(set(patch_files.keys())):
         patches = patch_files[dbc_name]
 
+        # Check for pre-built binary DBC that's newer than all YAML sources.
+        if dbc_name in prebuilt_dbc:
+            prebuilt_path = prebuilt_dbc[dbc_name]
+            prebuilt_mtime = os.path.getmtime(prebuilt_path)
+            sources = list(patches)
+            if dbc_name in orig_files:
+                sources.append(orig_files[dbc_name])
+            if all(os.path.getmtime(s) <= prebuilt_mtime for s in sources):
+                import shutil
+                out_path = os.path.join(output_dir, dbc_name + ".dbc")
+                shutil.copy2(prebuilt_path, out_path)
+                sz = os.path.getsize(out_path)
+                count += 1
+                print("  {} -> {} ({} bytes, pre-built)".format(
+                    dbc_name, out_path, sz))
+                continue
+
         if dbc_name in orig_files:
             # Merge original + patches in memory
             merged = db.merge_yaml_data(orig_files[dbc_name], patches[0])
             for extra in patches[1:]:
-                # For multi-layer: write temp, merge again
-                import tempfile
-                tmp = tempfile.NamedTemporaryFile(
-                    suffix=".yaml", delete=False, mode="w")
+                # Apply additional patches directly in memory (no temp file)
                 import yaml as _yaml
-                _yaml.dump(merged, tmp, default_flow_style=False,
-                           allow_unicode=True, sort_keys=False, width=120)
-                tmp.close()
-                merged = db.merge_yaml_data(tmp.name, extra)
-                os.unlink(tmp.name)
+                _loader = getattr(_yaml, "CSafeLoader", _yaml.SafeLoader)
+                with open(extra, "r", encoding="utf-8") as f:
+                    patch = _yaml.load(f, Loader=_loader)
+                if patch:
+                    records = merged.get("records", {})
+                    for rec_id, fields in patch.get("records", {}).items():
+                        if isinstance(fields, dict):
+                            if rec_id in records:
+                                records[rec_id].update(fields)
+                            else:
+                                records[rec_id] = fields
+                    for del_id in patch.get("_deleted", []):
+                        records.pop(del_id, None)
+                    merged["records"] = records
         else:
             # Patch-only (new table) — load directly
             import yaml as _yaml
