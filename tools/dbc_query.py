@@ -28,6 +28,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 from wdbx.dbc_db import DBCDB, ORIGINAL_DBC_DIR, PATCH_DBC_DIR, MERGED_DBC_DIR, DB_PATH
+from wdbx.id_remapper import IDRemapper
 
 
 def _parse_field_value(s: str):
@@ -242,6 +243,12 @@ def cmd_merge_to_dbc(args, db: DBCDB):
         print("No patch directories found")
         return
 
+    # Create ID remapper for local ID resolution
+    try:
+        remapper = IDRemapper()
+    except FileNotFoundError:
+        remapper = None
+
     # Import yaml_to_dbc (accepts dict or path)
     scripts_dir = os.path.join(
         os.path.dirname(PROJECT_ROOT), "scripts", "pack")
@@ -281,6 +288,45 @@ def cmd_merge_to_dbc(args, db: DBCDB):
     os.makedirs(output_dir, exist_ok=True)
     count = 0
 
+    def _detect_layer_from_path(yaml_path: str) -> str | None:
+        """Extract layer ID from yaml path."""
+        parts = yaml_path.replace("\\", "/").split("/")
+        for i, part in enumerate(parts):
+            if part == ".patch" and i + 1 < len(parts):
+                layer_dir = parts[i + 1]
+                if layer_dir.startswith("dev-"):
+                    return layer_dir[4:]
+                elif layer_dir[0].isdigit() and "-" in layer_dir:
+                    return layer_dir.split("-", 1)[1] if "-" in layer_dir else layer_dir
+                return layer_dir
+        return None
+
+    def _remap_records(records: dict, dbc_name: str, patch_path: str) -> dict:
+        """Remap local IDs in records to real IDs."""
+        if not remapper:
+            return records
+
+        layer_id = _detect_layer_from_path(patch_path)
+        if not layer_id:
+            return records
+
+        remapped = {}
+        for pk_key, fields in records.items():
+            if not isinstance(fields, dict):
+                remapped[pk_key] = fields
+                continue
+
+            try:
+                remapped_fields, remapped_pk = remapper.remap_record(
+                    layer_id, dbc_name, fields, pk_key
+                )
+                remapped[remapped_pk] = remapped_fields
+            except ValueError as e:
+                # If remapping fails, keep original
+                remapped[pk_key] = fields
+
+        return remapped
+
     for dbc_name in sorted(set(patch_files.keys())):
         patches = patch_files[dbc_name]
 
@@ -303,30 +349,62 @@ def cmd_merge_to_dbc(args, db: DBCDB):
 
         if dbc_name in orig_files:
             # Merge original + patches in memory
-            merged = db.merge_yaml_data(orig_files[dbc_name], patches[0])
+            merged = db.merge_yaml_data(
+                orig_files[dbc_name], patches[0],
+                remapper=remapper, patch_dirs=patch_dirs
+            )
+
+            # Remap the first patch's records if they have local IDs
+            import yaml as _yaml
+            _loader = getattr(_yaml, "CSafeLoader", _yaml.SafeLoader)
+            with open(patches[0], "r", encoding="utf-8") as f:
+                first_patch = _yaml.load(f, Loader=_loader)
+            if first_patch:
+                first_meta = first_patch.get("_meta") or {}
+                if first_meta.get("local_ids", False) and remapper:
+                    remapped_records = _remap_records(
+                        first_patch.get("records", {}), dbc_name, patches[0])
+                    for rec_id, fields in remapped_records.items():
+                        if isinstance(fields, dict):
+                            if rec_id in merged.get("records", {}):
+                                merged["records"][rec_id].update(fields)
+                            else:
+                                merged["records"][rec_id] = fields
+
             for extra in patches[1:]:
                 # Apply additional patches directly in memory (no temp file)
-                import yaml as _yaml
-                _loader = getattr(_yaml, "CSafeLoader", _yaml.SafeLoader)
                 with open(extra, "r", encoding="utf-8") as f:
                     patch = _yaml.load(f, Loader=_loader)
                 if patch:
-                    records = merged.get("records", {})
-                    for rec_id, fields in patch.get("records", {}).items():
+                    # Check for local IDs and remap
+                    patch_meta = patch.get("_meta") or {}
+                    if patch_meta.get("local_ids", False) and remapper:
+                        records = _remap_records(
+                            patch.get("records", {}), dbc_name, extra)
+                    else:
+                        records = patch.get("records", {})
+
+                    for rec_id, fields in records.items():
                         if isinstance(fields, dict):
-                            if rec_id in records:
-                                records[rec_id].update(fields)
+                            if rec_id in merged.get("records", {}):
+                                merged["records"][rec_id].update(fields)
                             else:
-                                records[rec_id] = fields
+                                merged["records"][rec_id] = fields
                     for del_id in patch.get("_deleted", []):
-                        records.pop(del_id, None)
-                    merged["records"] = records
+                        merged.get("records", {}).pop(del_id, None)
         else:
             # Patch-only (new table) — load directly
             import yaml as _yaml
             _loader = getattr(_yaml, "CSafeLoader", _yaml.SafeLoader)
             with open(patches[0], "r", encoding="utf-8") as f:
                 merged = _yaml.load(f, Loader=_loader)
+
+            # Remap local IDs if enabled
+            if merged:
+                patch_meta = merged.get("_meta") or {}
+                if patch_meta.get("local_ids", False) and remapper:
+                    merged["records"] = _remap_records(
+                        merged.get("records", {}), dbc_name, patches[0])
 
         # Convert merged dict directly to DBC binary
         dbc_bytes = yaml_to_dbc(merged)

@@ -192,6 +192,21 @@ _LOCALE_CODES = frozenset([
     "ruRU", "jaJP", "ptPT", "itIT", "zhCN", "zhTW",
 ])
 
+# Mapping from base table column names to locale table column names
+# e.g., quest_template.LogTitle -> quest_template_locale.Title
+_LOCALE_COL_MAP = {
+    # quest_template -> quest_template_locale
+    "LogTitle": "Title",
+    "LogDescription": "Objectives",
+    "QuestDescription": "Details",
+    "AreaDescription": "EndText",
+    "QuestCompletionLog": "CompletedText",
+    "ObjectiveText1": "ObjectiveText1",
+    "ObjectiveText2": "ObjectiveText2",
+    "ObjectiveText3": "ObjectiveText3",
+    "ObjectiveText4": "ObjectiveText4",
+}
+
 _LOCALE_SUFFIX_RE = re.compile(
     r'^(.+)_(' + '|'.join(_LOCALE_CODES) + r')$'
 )
@@ -940,8 +955,10 @@ class WorldDB:
                 m = _LOCALE_SUFFIX_RE.match(fk)
                 if m and locale_meta:
                     col_name, locale_code = m.group(1), m.group(2)
-                    if col_name in locale_col_set:
-                        locale_data.setdefault(locale_code, {})[col_name] = fv
+                    # Map base table column to locale table column
+                    locale_col_name = _LOCALE_COL_MAP.get(col_name, col_name)
+                    if locale_col_name in locale_col_set:
+                        locale_data.setdefault(locale_code, {})[locale_col_name] = fv
                         continue
                 base_fields[fk] = fv
 

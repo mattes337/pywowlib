@@ -54,10 +54,13 @@ class IDRange:
 ENTITY_ALIASES = {
     "quest": "quest_template",
     "item": "item_template",
+    "i": "item_template",  # Short alias
     "creature": "creature_template",
+    "c": "creature_template",  # Short alias
     "npc": "creature_template",
     "go": "gameobject_template",
     "gameobject": "gameobject_template",
+    "g": "gameobject_template",  # Short alias
     "spell": "spell_dbc",  # Server-side default
     "loot": "creature_loot_template",
     "goloot": "gameobject_loot_template",
@@ -260,7 +263,14 @@ class IDRemapper:
         if not isinstance(value, str):
             return value
 
-        parsed = self.parse_local_id(value)
+        # Handle negative prefix (for RequiredNpcOrGo gameobject references)
+        negative = False
+        work_value = value
+        if value.startswith('-'):
+            negative = True
+            work_value = value[1:]
+
+        parsed = self.parse_local_id(work_value)
         if not parsed:
             return value
 
@@ -274,7 +284,8 @@ class IDRemapper:
                 )
             entity_type = default_entity_type
 
-        return self.get_real_id(layer_id, entity_type, local_id)
+        real_id = self.get_real_id(layer_id, entity_type, local_id)
+        return -real_id if negative else real_id
 
     def remap_pk(
         self,
