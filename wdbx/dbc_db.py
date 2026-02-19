@@ -953,16 +953,28 @@ class DBCDB:
                     orig_files[dbc_name] = os.path.join(root, fname)
 
         # Collect patch YAML files from all layers (in order)
+        # _meta.dbc_name in the YAML overrides the filename-derived name.
         # dbc_name -> [path1, path2, ...] in layer order
         patch_files: dict[str, list[str]] = {}
         for pdir in patch_dirs:
             pdir = os.path.normpath(pdir)
             for root, _dirs, files in os.walk(pdir):
-                for fname in files:
-                    if fname.endswith(".yaml"):
-                        dbc_name = os.path.splitext(fname)[0]
-                        patch_files.setdefault(dbc_name, []).append(
-                            os.path.join(root, fname))
+                for fname in sorted(files):
+                    if not fname.endswith(".yaml"):
+                        continue
+                    fpath = os.path.join(root, fname)
+                    # Resolve DBC name: prefer _meta.dbc_name over filename
+                    dbc_name = os.path.splitext(fname)[0]
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            header = yaml.safe_load(f)
+                        if isinstance(header, dict):
+                            meta_dn = (header.get("_meta") or {}).get("dbc_name")
+                            if meta_dn:
+                                dbc_name = meta_dn
+                    except Exception:
+                        pass
+                    patch_files.setdefault(dbc_name, []).append(fpath)
 
         results = {}
 

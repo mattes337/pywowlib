@@ -2,9 +2,24 @@
 ID Remapper - Transforms layer-local IDs to real IDs during merge.
 
 Local ID Syntax:
-- @entity_type:N  - Local ID N for specified entity type (e.g., @item:50)
-- @:N             - Local ID N for same entity type as current record
-- Plain number    - Vanilla/real ID (unchanged)
+- @entity_type:N         - Local ID N for specified entity type (e.g., @item:50)
+- @entity_type:slug      - Slug-based ID, auto-assigned and manifested (e.g., @item:iron-gauntlets)
+- @entity_type:N:slug    - Explicit ID with slug for documentation (e.g., @item:90050:iron-gauntlets)
+- @:N                    - Local ID N for same entity type as current record
+- @:slug                 - Slug-based ID for same entity type
+- @:N:slug               - Explicit ID with slug for same entity type
+- Plain number           - Vanilla/real ID (unchanged)
+
+Slug Syntax Rules:
+- Lowercase letters, numbers, hyphens, underscores only
+- Must start with a letter
+- Maximum 64 characters
+
+Manifestation Workflow:
+1. User writes @item:iron-gauntlets (slug only)
+2. Pipeline assigns next available ID (e.g., 90050)
+3. Pipeline rewrites source to @item:90050:iron-gauntlets
+4. Future runs use explicit ID (stable, no re-ordering)
 
 Entity Type Aliases:
 - quest       → quest_template
@@ -21,6 +36,15 @@ from pathlib import Path
 from typing import Any, Optional
 
 import yaml
+
+
+@dataclass
+class Manifestation:
+    """Tracks an ID manifestation that needs to be written back to source."""
+    yaml_path: str
+    field_path: str  # e.g., "records.@:the-first-mail.RewardItem1"
+    original: str    # "@item:iron-gauntlets"
+    manifested: str  # "@item:90050:iron-gauntlets"
 
 
 @dataclass
@@ -73,8 +97,16 @@ ENTITY_ALIASES = {
     "AreaTable": "AreaTable",
 }
 
-# Regex to match @entity_type:N or @:N syntax
-LOCAL_ID_PATTERN = re.compile(r'^@([a-zA-Z_]*):(\d+)$')
+# Regex to match local ID patterns:
+# Group 1-3: @entity:123 or @entity:123:slug (numeric ID, optional slug)
+# Group 4-5: @entity:slug (slug only, no ID)
+LOCAL_ID_PATTERN = re.compile(
+    r'^@([a-zA-Z_]*):(\d+)(?::([a-z][a-z0-9_-]*))?$|'  # @e:123 or @e:123:slug
+    r'^@([a-zA-Z_]*):([a-z][a-z0-9_-]*)$'              # @e:slug
+)
+
+# Slug validation pattern (same as embedded in LOCAL_ID_PATTERN)
+SLUG_PATTERN = re.compile(r'^[a-z][a-z0-9_-]*$')
 
 
 class IDRemapper:
@@ -95,6 +127,13 @@ class IDRemapper:
         self.registry_path = self._find_registry(registry_path)
         self.config: dict = self._load_config()
         self.ranges: dict[str, dict[str, list[IDRange]]] = self._parse_ranges()
+
+        # Manifestation tracking
+        self._manifestations: list[Manifestation] = []
+        # {layer_entity_key: {real_id: slug}} - tracks already-manifested IDs
+        self._manifested_ids: dict[str, dict[int, str]] = {}
+        # {layer_entity_key: {slug: real_id}} - reverse lookup for cross-file consistency
+        self._slug_to_id: dict[str, dict[str, int]] = {}
 
     def _find_registry(self, registry_path: Optional[str]) -> Path:
         """Find the id-registry.yaml file."""
@@ -224,30 +263,48 @@ class IDRemapper:
 
         return id_range.to_real(local_id)
 
-    def parse_local_id(self, value: str) -> Optional[tuple[str, int]]:
+    def parse_local_id(self, value: str) -> Optional[tuple[str, int | None, str | None]]:
         """
-        Parse a local ID string like "@item:50" or "@:1".
+        Parse a local ID string.
+
+        Supports formats:
+        - @item:50              → ("item", 50, None)
+        - @item:50:gauntlets    → ("item", 50, "gauntlets")
+        - @item:gauntlets       → ("item", None, "gauntlets")
+        - @:1                   → ("", 1, None)
+        - @:1:gauntlets         → ("", 1, "gauntlets")
+        - @:gauntlets           → ("", None, "gauntlets")
 
         Args:
             value: String value to parse
 
         Returns:
-            Tuple of (entity_type, local_id) if local ID, None otherwise
+            Tuple of (entity_type, numeric_id or None, slug or None) if local ID, None otherwise
         """
         match = LOCAL_ID_PATTERN.match(value)
         if not match:
             return None
 
-        entity_type = match.group(1)  # Empty for @:N syntax
-        local_id = int(match.group(2))
-
-        return (entity_type, local_id)
+        # Check which group matched (numeric+optional slug vs slug-only)
+        if match.group(1) is not None:
+            # @entity:123 or @entity:123:slug format
+            entity_type = match.group(1)
+            numeric_id = int(match.group(2))
+            slug = match.group(3)  # May be None
+            return (entity_type, numeric_id, slug)
+        else:
+            # @entity:slug format
+            entity_type = match.group(4)
+            slug = match.group(5)
+            return (entity_type, None, slug)
 
     def remap_value(
         self,
         layer_id: str,
         value: Any,
-        default_entity_type: Optional[str] = None
+        default_entity_type: Optional[str] = None,
+        yaml_path: Optional[str] = None,
+        field_path: Optional[str] = None
     ) -> Any:
         """
         Remap a value if it contains a local ID reference.
@@ -256,6 +313,8 @@ class IDRemapper:
             layer_id: Layer identifier
             value: Value to potentially remap
             default_entity_type: Entity type to use for @:N syntax
+            yaml_path: Path to source file (for manifestation tracking)
+            field_path: Field path in record (for manifestation tracking)
 
         Returns:
             Remapped value (int) or original value if not a local ID
@@ -274,9 +333,9 @@ class IDRemapper:
         if not parsed:
             return value
 
-        entity_type, local_id = parsed
+        entity_type, numeric_id, slug = parsed
 
-        # @:N syntax uses default entity type
+        # @:N or @:slug syntax uses default entity type
         if not entity_type:
             if not default_entity_type:
                 raise ValueError(
@@ -284,14 +343,29 @@ class IDRemapper:
                 )
             entity_type = default_entity_type
 
-        real_id = self.get_real_id(layer_id, entity_type, local_id)
+        # Resolve entity type alias
+        canonical_type = self.resolve_entity_type(entity_type)
+        key = f"{layer_id}_{canonical_type}"
+
+        if numeric_id is not None:
+            # Explicit numeric ID - use it directly
+            real_id = self.get_real_id(layer_id, entity_type, numeric_id)
+        elif slug is not None:
+            # Slug-only - look up or assign ID
+            real_id = self._resolve_slug(layer_id, entity_type, slug, yaml_path, field_path)
+        else:
+            # Should not happen with valid regex
+            return value
+
         return -real_id if negative else real_id
 
     def remap_pk(
         self,
         layer_id: str,
         pk_value: Any,
-        default_entity_type: Optional[str] = None
+        default_entity_type: Optional[str] = None,
+        yaml_path: Optional[str] = None,
+        field_path: Optional[str] = None
     ) -> Any:
         """
         Remap a primary key value.
@@ -302,6 +376,8 @@ class IDRemapper:
             layer_id: Layer identifier
             pk_value: PK value (can be string, int, or pipe-delimited)
             default_entity_type: Entity type for @:N syntax
+            yaml_path: Path to source file (for manifestation tracking)
+            field_path: Field path in record (for manifestation tracking)
 
         Returns:
             Remapped PK value
@@ -314,16 +390,18 @@ class IDRemapper:
 
         # Check for pipe-delimited composite PK
         if "|" in pk_value:
-            return self.remap_composite_pk(layer_id, pk_value, default_entity_type)
+            return self.remap_composite_pk(layer_id, pk_value, default_entity_type, yaml_path, field_path)
 
         # Single value
-        return self.remap_value(layer_id, pk_value, default_entity_type)
+        return self.remap_value(layer_id, pk_value, default_entity_type, yaml_path, field_path)
 
     def remap_composite_pk(
         self,
         layer_id: str,
         pk_str: str,
-        default_entity_type: Optional[str] = None
+        default_entity_type: Optional[str] = None,
+        yaml_path: Optional[str] = None,
+        field_path: Optional[str] = None
     ) -> str:
         """
         Remap a composite PK with pipe-delimited format.
@@ -334,6 +412,8 @@ class IDRemapper:
             layer_id: Layer identifier
             pk_str: Pipe-delimited PK string (e.g., "38|@item:500")
             default_entity_type: Entity type for @:N syntax
+            yaml_path: Path to source file (for manifestation tracking)
+            field_path: Field path in record (for manifestation tracking)
 
         Returns:
             Remapped pipe-delimited PK string
@@ -341,15 +421,27 @@ class IDRemapper:
         components = pk_str.split("|")
         remapped = []
 
-        for component in components:
+        for i, component in enumerate(components):
             component = component.strip()
             parsed = self.parse_local_id(component)
 
             if parsed:
-                entity_type, local_id = parsed
+                entity_type, numeric_id, slug = parsed
                 if not entity_type:
                     entity_type = default_entity_type or ""
-                real_id = self.get_real_id(layer_id, entity_type, local_id)
+
+                canonical_type = self.resolve_entity_type(entity_type)
+                key = f"{layer_id}_{canonical_type}"
+
+                if numeric_id is not None:
+                    real_id = self.get_real_id(layer_id, entity_type, numeric_id)
+                elif slug is not None:
+                    component_path = f"{field_path}[{i}]" if field_path else f"pk[{i}]"
+                    real_id = self._resolve_slug(layer_id, entity_type, slug, yaml_path, component_path)
+                else:
+                    remapped.append(component)
+                    continue
+
                 remapped.append(str(real_id))
             else:
                 remapped.append(component)
@@ -501,3 +593,252 @@ class IDRemapper:
     def list_entity_types(self) -> list[str]:
         """Get list of all entity types with registered ranges."""
         return sorted(self.ranges.keys())
+
+    # =========================================================================
+    # Manifestation System
+    # =========================================================================
+
+    def _get_key(self, layer_id: str, entity_type: str) -> str:
+        """Get the storage key for a layer/entity combination."""
+        canonical = self.resolve_entity_type(entity_type)
+        return f"{layer_id}_{canonical}"
+
+    def _resolve_slug(
+        self,
+        layer_id: str,
+        entity_type: str,
+        slug: str,
+        yaml_path: Optional[str] = None,
+        field_path: Optional[str] = None
+    ) -> int:
+        """
+        Resolve a slug to a real ID.
+
+        If the slug has already been manifested, returns the existing ID.
+        Otherwise, assigns a new ID and tracks it for source rewriting.
+
+        Args:
+            layer_id: Layer identifier
+            entity_type: Entity type
+            slug: Slug string
+            yaml_path: Path to source file (for manifestation tracking)
+            field_path: Field path in record (for manifestation tracking)
+
+        Returns:
+            Real ID for this slug
+        """
+        key = self._get_key(layer_id, entity_type)
+
+        # Check if already resolved
+        if key in self._slug_to_id and slug in self._slug_to_id[key]:
+            return self._slug_to_id[key][slug]
+
+        # Assign new ID
+        real_id = self._assign_next_id(layer_id, entity_type, slug)
+
+        # Track manifestation if we have source info
+        if yaml_path and field_path:
+            original = f"@{entity_type}:{slug}"
+            manifested = f"@{entity_type}:{real_id}:{slug}"
+            self._manifestations.append(Manifestation(
+                yaml_path=yaml_path,
+                field_path=field_path,
+                original=original,
+                manifested=manifested
+            ))
+
+        return real_id
+
+    def _assign_next_id(self, layer_id: str, entity_type: str, slug: str) -> int:
+        """
+        Assign the next available ID to a slug.
+
+        Args:
+            layer_id: Layer identifier
+            entity_type: Entity type
+            slug: Slug string
+
+        Returns:
+            Assigned real ID
+        """
+        key = self._get_key(layer_id, entity_type)
+        id_range = self.get_range(layer_id, entity_type)
+
+        if not id_range:
+            raise ValueError(
+                f"No ID range found for layer '{layer_id}', entity type '{entity_type}'"
+            )
+
+        # Initialize tracking if needed
+        if key not in self._manifested_ids:
+            self._manifested_ids[key] = {}
+        if key not in self._slug_to_id:
+            self._slug_to_id[key] = {}
+
+        used_ids = set(self._manifested_ids[key].keys())
+
+        # Find next available ID starting from 1
+        local_id = 1
+        while True:
+            real_id = id_range.to_real(local_id)
+            if real_id not in used_ids:
+                break
+            local_id += 1
+            if local_id > id_range.count:
+                raise ValueError(
+                    f"ID range exhausted for layer '{layer_id}', entity type '{entity_type}'"
+                )
+
+        # Record the assignment
+        self._manifested_ids[key][real_id] = slug
+        self._slug_to_id[key][slug] = real_id
+
+        return real_id
+
+    def scan_manifested_ids(
+        self,
+        yaml_files: list[tuple[str, str, dict, str]]
+    ) -> None:
+        """
+        Pre-scan files to collect already-manifested IDs.
+
+        Call this before processing to ensure we don't reassign existing IDs.
+
+        Args:
+            yaml_files: List of (yaml_path, table_name, data, layer_id) tuples
+        """
+        for yaml_path, table_name, data, layer_id in yaml_files:
+            self._scan_file_manifestations(yaml_path, table_name, data, layer_id)
+
+    def _scan_file_manifestations(
+        self,
+        yaml_path: str,
+        table_name: str,
+        data: dict,
+        layer_id: str
+    ) -> None:
+        """Scan a single file for already-manifested IDs."""
+        records = data.get("records", {})
+
+        for pk_key, fields in records.items():
+            if not isinstance(fields, dict):
+                continue
+
+            # Scan PK
+            if isinstance(pk_key, str) and pk_key.startswith("@"):
+                self._collect_manifested_pk(layer_id, table_name, pk_key)
+
+            # Scan fields
+            for field_name, value in fields.items():
+                self._collect_manifested_value(layer_id, table_name, value)
+
+    def _collect_manifested_pk(self, layer_id: str, table_name: str, pk: str) -> None:
+        """Collect manifested IDs from a primary key."""
+        # Handle pipe-delimited PKs
+        if "|" in pk:
+            for component in pk.split("|"):
+                self._collect_manifested_single(layer_id, table_name, component.strip())
+        else:
+            self._collect_manifested_single(layer_id, table_name, pk)
+
+    def _collect_manifested_value(
+        self,
+        layer_id: str,
+        default_entity: str,
+        value: Any
+    ) -> None:
+        """Recursively collect manifested IDs from a value."""
+        if isinstance(value, str) and value.startswith("@"):
+            self._collect_manifested_single(layer_id, default_entity, value)
+        elif isinstance(value, dict):
+            for v in value.values():
+                self._collect_manifested_value(layer_id, default_entity, v)
+        elif isinstance(value, list):
+            for item in value:
+                self._collect_manifested_value(layer_id, default_entity, item)
+
+    def _collect_manifested_single(
+        self,
+        layer_id: str,
+        default_entity: str,
+        value: str
+    ) -> None:
+        """Collect a single manifested ID if it has an explicit numeric ID.
+
+        The numeric ID in @entity:N:slug format is a REAL ID (already manifested).
+        """
+        parsed = self.parse_local_id(value)
+        if not parsed:
+            return
+
+        entity_type, numeric_id, slug = parsed
+
+        # Only collect if we have an explicit numeric ID
+        if numeric_id is None:
+            return
+
+        # Resolve entity type
+        if not entity_type:
+            entity_type = default_entity
+
+        key = self._get_key(layer_id, entity_type)
+
+        # Initialize tracking if needed
+        if key not in self._manifested_ids:
+            self._manifested_ids[key] = {}
+        if key not in self._slug_to_id:
+            self._slug_to_id[key] = {}
+
+        # Record the manifested ID
+        # Note: numeric_id is already a REAL ID (manifested), not a local ID
+        id_range = self.get_range(layer_id, entity_type)
+        if id_range and id_range.base <= numeric_id <= id_range.end:
+            real_id = numeric_id
+            self._manifested_ids[key][real_id] = slug or ""
+            if slug:
+                self._slug_to_id[key][slug] = real_id
+
+    def write_manifestations(self) -> int:
+        """
+        Rewrite source YAML files with manifested IDs.
+
+        Returns:
+            Number of files modified
+        """
+        if not self._manifestations:
+            return 0
+
+        # Group by file
+        by_file: dict[str, list[Manifestation]] = {}
+        for m in self._manifestations:
+            by_file.setdefault(m.yaml_path, []).append(m)
+
+        files_changed = 0
+        for yaml_path, manifests in by_file.items():
+            try:
+                with open(yaml_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+
+                original_content = content
+
+                # Apply all manifestations for this file
+                for m in manifests:
+                    content = content.replace(m.original, m.manifested)
+
+                if content != original_content:
+                    with open(yaml_path, "w", encoding="utf-8") as f:
+                        f.write(content)
+                    files_changed += 1
+
+            except Exception as e:
+                print(f"Warning: Could not write manifestations to {yaml_path}: {e}")
+
+        return files_changed
+
+    def get_manifestations(self) -> list[Manifestation]:
+        """Get list of pending manifestations."""
+        return self._manifestations.copy()
+
+    def clear_manifestations(self) -> None:
+        """Clear all pending manifestations (useful for testing)."""
+        self._manifestations.clear()

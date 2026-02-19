@@ -5,6 +5,7 @@ Usage:
     python id_remapper.py analyze --layer sensible-loot   # Find conversion candidates
     python id_remapper.py preview --layer sensible-loot   # Preview remapping
     python id_remapper.py migrate --layer sensible-loot   # Convert to local format
+    python id_remapper.py manifest --layer sensible-loot  # Manifest slug-only IDs
     python id_remapper.py validate                        # Validate local IDs
     python id_remapper.py ranges                          # Show configured ranges
 """
@@ -21,7 +22,7 @@ import yaml
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from wdbx.id_remapper import IDRemapper, ENTITY_ALIASES, LOCAL_ID_PATTERN
+from wdbx.id_remapper import IDRemapper, ENTITY_ALIASES, LOCAL_ID_PATTERN, Manifestation
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 REGISTRY_PATH = PROJECT_ROOT / ".patch" / "id-registry.yaml"
@@ -394,30 +395,33 @@ def cmd_validate(args):
                     continue
 
                 # Check PK
-                if isinstance(pk_key, str) and pk_key.startswith("@:"):
-                    match = LOCAL_ID_PATTERN.match(pk_key)
-                    if match:
-                        local_id = int(match.group(2))
-                        is_valid, err = remapper.validate_local_id(
-                            layer_id, table_name, local_id
-                        )
-                        if not is_valid:
-                            errors.append(f"{yaml_path}: PK {pk_key} - {err}")
+                if isinstance(pk_key, str) and pk_key.startswith("@"):
+                    parsed = remapper.parse_local_id(pk_key)
+                    if parsed:
+                        entity_type, numeric_id, slug = parsed
+                        if numeric_id is not None:
+                            entity_type = entity_type or table_name
+                            is_valid, err = remapper.validate_local_id(
+                                layer_id, entity_type, numeric_id
+                            )
+                            if not is_valid:
+                                errors.append(f"{yaml_path}: PK {pk_key} - {err}")
 
                 # Check fields
                 for field_name, value in fields.items():
                     if isinstance(value, str) and value.startswith("@"):
-                        match = LOCAL_ID_PATTERN.match(value)
-                        if match:
-                            entity_type = match.group(1) or table_name
-                            local_id = int(match.group(2))
-                            is_valid, err = remapper.validate_local_id(
-                                layer_id, entity_type, local_id
-                            )
-                            if not is_valid:
-                                errors.append(
-                                    f"{yaml_path}: {field_name}={value} - {err}"
+                        parsed = remapper.parse_local_id(value)
+                        if parsed:
+                            entity_type, numeric_id, slug = parsed
+                            if numeric_id is not None:
+                                entity_type = entity_type or table_name
+                                is_valid, err = remapper.validate_local_id(
+                                    layer_id, entity_type, numeric_id
                                 )
+                                if not is_valid:
+                                    errors.append(
+                                        f"{yaml_path}: {field_name}={value} - {err}"
+                                    )
 
     if errors:
         print(f"Found {len(errors)} validation errors:\n")
@@ -427,6 +431,179 @@ def cmd_validate(args):
     else:
         print("All local IDs are valid!")
         return 0
+
+
+def cmd_manifest(args):
+    """Manifest slug-only IDs in a layer."""
+    layer_id = args.layer
+    dry_run = args.dry_run
+
+    try:
+        remapper = IDRemapper()
+    except FileNotFoundError:
+        print("Error: id-registry.yaml not found")
+        return 1
+
+    yaml_files = scan_yaml_files(layer_id)
+    if not yaml_files:
+        print(f"No YAML files found for layer '{layer_id}'")
+        return 1
+
+    # Augment with layer_id for manifestation scanning
+    yaml_files_with_layer = [(p, t, d, layer_id) for p, t, d in yaml_files]
+
+    print(f"Scanning layer: {layer_id}")
+    print("=" * 60)
+
+    # Phase 1: Scan for already-manifested IDs
+    remapper.scan_manifested_ids(yaml_files_with_layer)
+
+    # Count manifested IDs found
+    manifested_count = sum(len(ids) for ids in remapper._manifested_ids.values())
+    print(f"Found {manifested_count} already-manifested IDs")
+
+    # Phase 2: Process files to find slug-only references
+    slug_refs = []  # [(yaml_path, field_path, original_str, entity_type, slug), ...]
+
+    for yaml_path, table_name, data, _ in yaml_files_with_layer:
+        uses_local_ids = (data.get("_meta") or {}).get("local_ids", False)
+        if not uses_local_ids:
+            continue
+
+        records = data.get("records", {})
+        for pk_key, fields in records.items():
+            if not isinstance(fields, dict):
+                continue
+
+            # Check PK
+            if isinstance(pk_key, str) and pk_key.startswith("@"):
+                parsed = remapper.parse_local_id(pk_key)
+                if parsed:
+                    entity_type, numeric_id, slug = parsed
+                    if numeric_id is None and slug is not None:
+                        entity_type = entity_type or table_name
+                        slug_refs.append((yaml_path, f"PK[{pk_key}]", pk_key, entity_type, slug))
+
+            # Check fields
+            for field_name, value in fields.items():
+                def collect_slugs(val, path):
+                    if isinstance(val, str) and val.startswith("@"):
+                        parsed = remapper.parse_local_id(val)
+                        if parsed:
+                            entity_type, numeric_id, slug = parsed
+                            if numeric_id is None and slug is not None:
+                                entity_type = entity_type or table_name
+                                slug_refs.append((yaml_path, path, val, entity_type, slug))
+                    elif isinstance(val, dict):
+                        for k, v in val.items():
+                            collect_slugs(v, f"{path}.{k}")
+                    elif isinstance(val, list):
+                        for i, item in enumerate(val):
+                            collect_slugs(item, f"{path}[{i}]")
+
+                collect_slugs(value, field_name)
+
+    if not slug_refs:
+        print("No slug-only IDs found to manifest")
+        return 0
+
+    print(f"\nFound {len(slug_refs)} slug-only references to manifest:")
+    for yaml_path, field_path, original, entity_type, slug in slug_refs:
+        print(f"  {original} in {Path(yaml_path).name} ({field_path})")
+
+    if dry_run:
+        print("\nDRY RUN: Would manifest the above IDs")
+        return 0
+
+    # Phase 3: Assign IDs to slugs (sorted for deterministic assignment)
+    print("\nAssigning IDs...")
+
+    # Group slugs by entity type and sort
+    slugs_by_entity: dict[str, set[str]] = {}
+    for yaml_path, field_path, original, entity_type, slug in slug_refs:
+        key = remapper._get_key(layer_id, entity_type)
+        if key not in slugs_by_entity:
+            slugs_by_entity[key] = set()
+        slugs_by_entity[key].add(slug)
+
+    # Assign IDs in sorted order
+    slug_to_id: dict[str, dict[str, int]] = {}  # {layer_entity: {slug: real_id}}
+
+    for key, slugs in sorted(slugs_by_entity.items()):
+        slug_to_id[key] = {}
+        for slug in sorted(slugs):
+            # Check if already assigned
+            if key in remapper._slug_to_id and slug in remapper._slug_to_id[key]:
+                slug_to_id[key][slug] = remapper._slug_to_id[key][slug]
+                print(f"  @{slug} -> {remapper._slug_to_id[key][slug]} (existing)")
+            else:
+                # Assign new ID
+                entity_type = key.split("_", 1)[1] if "_" in key else key
+                real_id = remapper._assign_next_id(layer_id, entity_type, slug)
+                slug_to_id[key][slug] = real_id
+                print(f"  @{slug} -> {real_id} (new)")
+
+    # Phase 4: Create manifestations
+    for yaml_path, field_path, original, entity_type, slug in slug_refs:
+        key = remapper._get_key(layer_id, entity_type)
+        real_id = slug_to_id[key][slug]
+        # Build manifested string: @entity:id:slug or @:id:slug
+        # Preserve the original entity prefix style
+        if original.startswith("@:"):
+            manifested = f"@:{real_id}:{slug}"
+        else:
+            manifested = f"@{entity_type}:{real_id}:{slug}"
+        remapper._manifestations.append(Manifestation(
+            yaml_path=yaml_path,
+            field_path=field_path,
+            original=original,
+            manifested=manifested
+        ))
+
+    # Phase 5: Write manifestations to source files
+    files_changed = remapper.write_manifestations()
+
+    print(f"\nManifested IDs in {files_changed} file(s)")
+    return 0
+
+
+def cmd_list_manifestations(args):
+    """List all manifested IDs for a layer."""
+    layer_id = args.layer
+
+    try:
+        remapper = IDRemapper()
+    except FileNotFoundError:
+        print("Error: id-registry.yaml not found")
+        return 1
+
+    yaml_files = scan_yaml_files(layer_id)
+    if not yaml_files:
+        print(f"No YAML files found for layer '{layer_id}'")
+        return 1
+
+    # Augment with layer_id for manifestation scanning
+    yaml_files_with_layer = [(p, t, d, layer_id) for p, t, d in yaml_files]
+
+    # Scan for already-manifested IDs
+    remapper.scan_manifested_ids(yaml_files_with_layer)
+
+    print(f"Manifested IDs for layer: {layer_id}")
+    print("=" * 60)
+
+    if not remapper._manifested_ids:
+        print("No manifested IDs found")
+        return 0
+
+    for key, ids in sorted(remapper._manifested_ids.items()):
+        print(f"\n{key}:")
+        for real_id, slug in sorted(ids.items()):
+            if slug:
+                print(f"  {real_id}: {slug}")
+            else:
+                print(f"  {real_id}: (no slug)")
+
+    return 0
 
 
 def cmd_ranges(args):
@@ -480,6 +657,17 @@ def main():
     p_migrate.add_argument("--file", help="Specific file to migrate")
     p_migrate.add_argument("--dry-run", action="store_true", help="Preview without changes")
     p_migrate.set_defaults(func=cmd_migrate)
+
+    # manifest
+    p_manifest = subparsers.add_parser("manifest", help="Manifest slug-only IDs to explicit IDs")
+    p_manifest.add_argument("--layer", required=True, help="Layer ID to manifest")
+    p_manifest.add_argument("--dry-run", action="store_true", help="Preview without changes")
+    p_manifest.set_defaults(func=cmd_manifest)
+
+    # list
+    p_list = subparsers.add_parser("list", help="List manifested IDs for a layer")
+    p_list.add_argument("--layer", required=True, help="Layer ID to list")
+    p_list.set_defaults(func=cmd_list_manifestations)
 
     # validate
     p_validate = subparsers.add_parser("validate", help="Validate local IDs")
