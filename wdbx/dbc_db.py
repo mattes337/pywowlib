@@ -23,6 +23,8 @@ from typing import Any
 
 import yaml
 
+from .id_remapper import IDRemapper
+
 # Prefer C-based YAML loader (5-10x faster than pure Python SafeLoader)
 _yaml_loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 
@@ -803,10 +805,35 @@ class DBCDB:
     # ------------------------------------------------------------------
     # Merge — combine original + patch YAML files
     # ------------------------------------------------------------------
-    def merge_yaml_data(self, original_path: str, patch_path: str) -> dict:
+    @staticmethod
+    def _detect_layer_from_path(yaml_path: str, patch_dirs: list[str]) -> str | None:
+        """Detect layer ID from yaml_path by matching against patch_dirs."""
+        yaml_path = os.path.normpath(yaml_path)
+        parts = Path(yaml_path).parts
+
+        for i, part in enumerate(parts):
+            if part == ".patch" and i + 1 < len(parts):
+                layer_dir = parts[i + 1]
+                if layer_dir.startswith("dev-"):
+                    return layer_dir[4:]
+                elif layer_dir[0].isdigit() and "-" in layer_dir:
+                    return layer_dir.split("-", 1)[1] if "-" in layer_dir else layer_dir
+                return layer_dir
+        return None
+
+    def merge_yaml_data(
+        self,
+        original_path: str,
+        patch_path: str,
+        remapper: IDRemapper | None = None,
+        patch_dirs: list[str] | None = None
+    ) -> dict:
         """Merge original + patch YAML files and return the merged dict.
 
         Does NOT write to disk. Caller can write to YAML or convert directly.
+
+        If remapper is provided and patch has _meta.local_ids: true,
+        @entity_type:N syntax is remapped to real IDs.
         """
         with open(original_path, "r", encoding="utf-8") as f:
             original = yaml.load(f, Loader=_yaml_loader)
@@ -817,17 +844,45 @@ class DBCDB:
         if not original or not patch:
             return original or {}
 
+        # Check if patch uses local IDs
+        patch_meta = patch.get("_meta") or {}
+        uses_local_ids = patch_meta.get("local_ids", False)
+        dbc_name = patch_meta.get("dbc_name", "")
+
+        # Detect layer for remapping
+        layer_id = None
+        if uses_local_ids and remapper and patch_dirs:
+            layer_id = self._detect_layer_from_path(patch_path, patch_dirs)
+
         records = original.get("records", {})
 
         for rec_id, patch_fields in patch.get("records", {}).items():
             if not isinstance(patch_fields, dict):
                 continue
-            if rec_id in records:
-                records[rec_id].update(patch_fields)
+
+            # Remap IDs if local mode is active
+            final_rec_id = rec_id
+            if uses_local_ids and remapper and layer_id:
+                try:
+                    patch_fields, final_rec_id = remapper.remap_record(
+                        layer_id, dbc_name, patch_fields, rec_id
+                    )
+                except ValueError as e:
+                    print(f"  WARN: ID remap failed in {patch_path}: {e}")
+                    continue
+
+            if final_rec_id in records:
+                records[final_rec_id].update(patch_fields)
             else:
-                records[rec_id] = patch_fields
+                records[final_rec_id] = patch_fields
 
         for del_id in patch.get("_deleted", []):
+            # Remap deletion keys too
+            if uses_local_ids and remapper and layer_id:
+                try:
+                    del_id = remapper.remap_pk(layer_id, del_id, dbc_name)
+                except ValueError:
+                    pass  # If remap fails, try original
             records.pop(del_id, None)
 
         self._expand_locale_fields(records)
@@ -839,9 +894,17 @@ class DBCDB:
         return original
 
     def merge_yaml(self, original_path: str, patch_path: str,
-                   output_path: str):
-        """Merge original + patch YAML files, write result to output_path."""
-        merged = self.merge_yaml_data(original_path, patch_path)
+                   output_path: str,
+                   remapper: IDRemapper | None = None,
+                   patch_dirs: list[str] | None = None):
+        """Merge original + patch YAML files, write result to output_path.
+
+        If remapper is provided, @entity_type:N syntax is remapped.
+        """
+        merged = self.merge_yaml_data(
+            original_path, patch_path,
+            remapper=remapper, patch_dirs=patch_dirs
+        )
         if merged:
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             with open(output_path, "w", encoding="utf-8") as f:
@@ -851,7 +914,8 @@ class DBCDB:
     def merge_directory(self, original_dir: str,
                         patch_dirs: str | list[str],
                         output_dir: str,
-                        patched_only: bool = False) -> dict:
+                        patched_only: bool = False,
+                        remapper: IDRemapper | None = None) -> dict:
         """Merge YAML files from original + patch directories.
 
         patch_dirs can be a single path (str) or list of paths applied
@@ -859,6 +923,8 @@ class DBCDB:
 
         If patched_only is True, only files with patches are output (fast mode).
         Otherwise, unmodified originals are also copied to output_dir.
+
+        If remapper is provided, @entity_type:N syntax is remapped.
 
         Returns {table_name: action, ...}.
         """
@@ -870,6 +936,13 @@ class DBCDB:
         # Normalize to list
         if isinstance(patch_dirs, str):
             patch_dirs = [patch_dirs]
+
+        # Create remapper if not provided
+        if remapper is None:
+            try:
+                remapper = IDRemapper()
+            except FileNotFoundError:
+                remapper = None  # No registry file, skip remapping
 
         # Collect all original YAML files
         orig_files: dict[str, str] = {}  # dbc_name -> full path
@@ -899,9 +972,15 @@ class DBCDB:
                 category = _get_category(dbc_name)
                 out_path = os.path.join(output_dir, category, dbc_name + ".yaml")
                 # Merge original + all patch layers in sequence
-                self.merge_yaml(orig_path, patch_files[dbc_name][0], out_path)
+                self.merge_yaml(
+                    orig_path, patch_files[dbc_name][0], out_path,
+                    remapper=remapper, patch_dirs=patch_dirs
+                )
                 for extra_patch in patch_files[dbc_name][1:]:
-                    self.merge_yaml(out_path, extra_patch, out_path)
+                    self.merge_yaml(
+                        out_path, extra_patch, out_path,
+                        remapper=remapper, patch_dirs=patch_dirs
+                    )
                 results[dbc_name] = "merged"
                 print("  MERGE {:40s}".format(dbc_name))
             elif not patched_only:
@@ -921,7 +1000,10 @@ class DBCDB:
             # Copy first layer, merge subsequent
             shutil.copy2(paths[0], out_path)
             for extra_patch in paths[1:]:
-                self.merge_yaml(out_path, extra_patch, out_path)
+                self.merge_yaml(
+                    out_path, extra_patch, out_path,
+                    remapper=remapper, patch_dirs=patch_dirs
+                )
             results[dbc_name] = "new"
             print("  NEW   {:40s}".format(dbc_name))
 

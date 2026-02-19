@@ -175,6 +175,106 @@ python tools/wmo_converter.py json2wmo Stormwind.json -o Stormwind.wmo
 
 The DBC converter uses DBD schema definitions for type-aware decoding with named fields (236 of 247 WotLK tables have named schemas). The ADT converter preserves all chunk data including MCNK sub-chunks, alpha maps, and shadow maps. The WMO converter auto-detects root vs. group files and handles materials, portals, doodad sets, BSP trees, and vertex data.
 
+## WDBX: Database Cache & Patch System
+
+The `wdbx/` module provides SQLite-backed caches for DBC and world database data, with YAML patch support for layered content modifications.
+
+### Features
+
+- **SQLite cache**: Fast local queries without MySQL or MPQ extraction
+- **FTS5 search**: Full-text search on text-heavy tables
+- **YAML patches**: Human-readable database modifications
+- **Layered merging**: Multiple patch layers with field-level override
+- **Dynamic ID ranges**: Local IDs remapped to real IDs during merge
+
+### Query Tools
+
+```bash
+# DBC queries (client-side data)
+python tools/dbc_query.py lookup Spell 133
+python tools/dbc_query.py search Spell "Fireball"
+python tools/dbc_query.py modify Spell 133 ManaCost=200
+
+# World database queries (server-side data)
+python tools/world_query.py lookup creature_template 448
+python tools/world_query.py search quest_template "Hogger"
+python tools/world_query.py generate-sql --patch-dirs .patch/my-layer/database
+```
+
+### Dynamic ID Ranges (Local IDs)
+
+Layers can use local offset IDs (`@entity_type:N` syntax) that are automatically remapped to real IDs during merge. This makes layers portable and prevents ID conflicts.
+
+```yaml
+# .patch/my-layer/database/quests/quest_template.yaml
+_meta:
+  table_name: quest_template
+  local_ids: true
+
+records:
+  "@:1":                         # Local ID 1 → 90001 (based on id-registry.yaml)
+    LogTitle: "My Quest"
+    RewardItem1: "@item:50"      # Local item ref → 90050
+    RequiredNpcOrGo1: 440        # Vanilla creature (unchanged)
+```
+
+**Local ID Syntax:**
+
+| Syntax | Meaning | Example |
+|--------|---------|---------|
+| `@entity_type:N` | Local ID N for entity type | `@item:50` → item_template ID |
+| `@:N` | Local ID N for same table | `"@:1"` in quest_template |
+| Plain number | Vanilla/real ID (unchanged) | `440` |
+
+**Entity Type Aliases:**
+
+| Alias | Resolves To |
+|-------|-------------|
+| `quest` | `quest_template` |
+| `item` | `item_template` |
+| `creature`, `npc` | `creature_template` |
+| `go`, `gameobject` | `gameobject_template` |
+| `spell` | `spell_dbc` |
+
+### ID Remapper CLI
+
+```bash
+# Analyze a layer for local ID conversion candidates
+python tools/id_remapper.py analyze --layer my-layer
+
+# Preview remapping (dry-run)
+python tools/id_remapper.py preview --layer my-layer
+
+# Migrate existing YAML to local ID format
+python tools/id_remapper.py migrate --layer my-layer --dry-run
+
+# Validate local IDs don't exceed ranges
+python tools/id_remapper.py validate
+
+# Show configured ID ranges
+python tools/id_remapper.py ranges --layer my-layer
+```
+
+### ID Range Configuration
+
+ID ranges are defined in `.patch/id-registry.yaml`:
+
+```yaml
+id_ranges:
+  quest_template:
+    - layer: my-layer
+      range: 90001-90099
+      description: My feature quests
+
+  item_template:
+    - layer: my-layer
+      range: 90050-90171
+      description: My feature items
+```
+
+Local ID 1 maps to the first ID in the range (e.g., `@:1` → `90001`).
+
+
 ## Supported File Formats
 
 | Format | Description | 3.3.5a | Other Versions | Notes |

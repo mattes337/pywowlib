@@ -17,6 +17,7 @@ from typing import Any, Iterator
 
 import yaml
 
+from .id_remapper import IDRemapper
 from .sql_parser import parse_create_table, parse_insert_rows, TableSchema
 
 # ---------------------------------------------------------------------------
@@ -710,12 +711,16 @@ class WorldDB:
     # Generate SQL — convert YAML patches to MySQL SQL
     # ------------------------------------------------------------------
     def patches_to_sql(self, patch_dirs: str | list[str] = PATCH_DB_DIR,
-                       output_dir: str = MERGED_DB_DIR) -> list[str]:
+                       output_dir: str = MERGED_DB_DIR,
+                       remapper: Optional[IDRemapper] = None) -> list[str]:
         """Convert .patch/database/**/*.yaml → .merged/database/*.sql.
 
         patch_dirs can be a single path (str) or list of paths applied
         in order (for layered patches). When multiple layers modify the
         same table, records are merged in layer order (later wins).
+
+        If remapper is provided, @entity_type:N syntax in YAML files with
+        _meta.local_ids: true will be remapped to real IDs.
 
         Returns list of generated SQL file paths.
         """
@@ -725,6 +730,13 @@ class WorldDB:
 
         output_dir = os.path.normpath(output_dir)
         os.makedirs(output_dir, exist_ok=True)
+
+        # Create remapper if not provided
+        if remapper is None:
+            try:
+                remapper = IDRemapper()
+            except FileNotFoundError:
+                remapper = None  # No registry file, skip remapping
 
         # Collect YAML files from all layers, grouped by table name.
         # _meta.table_name in the YAML overrides the filename-derived name.
@@ -757,7 +769,9 @@ class WorldDB:
             yaml_paths = table_yamls[table_name]
             try:
                 # Merge YAML data from all layers for this table
-                merged_data = self._merge_yaml_layers(yaml_paths)
+                merged_data = self._merge_yaml_layers(
+                    yaml_paths, remapper=remapper, patch_dirs=patch_dirs
+                )
                 if not merged_data:
                     continue
 
@@ -778,11 +792,59 @@ class WorldDB:
         return generated
 
     @staticmethod
-    def _merge_yaml_layers(yaml_paths: list[str]) -> dict:
+    def _detect_layer_from_path(yaml_path: str, patch_dirs: list[str]) -> Optional[str]:
+        """Detect layer ID from yaml_path by matching against patch_dirs.
+
+        Args:
+            yaml_path: Full path to YAML file
+            patch_dirs: List of patch directory roots
+
+        Returns:
+            Layer ID (directory name under .patch/) or None
+        """
+        yaml_path = os.path.normpath(yaml_path)
+
+        for pdir in patch_dirs:
+            pdir = os.path.normpath(pdir)
+            if yaml_path.startswith(pdir):
+                # Extract the layer name from path
+                # e.g., .patch/dev-sensible-loot/database/... -> sensible-loot
+                rel_path = os.path.relpath(yaml_path, pdir)
+                parts = rel_path.split(os.sep)
+                if parts:
+                    # First part might be a category dir, check if it's the layer
+                    # Patch dirs are like .patch/dev-sensible-loot/database/
+                    # So we need to extract from the patch_dir path itself
+                    pass
+
+        # Fallback: extract from .patch/<layer>/ pattern
+        # yaml_path might be like G:/WoW Projects/.patch/dev-sensible-loot/database/...
+        parts = yaml_path.split(os.sep)
+        for i, part in enumerate(parts):
+            if part == ".patch" and i + 1 < len(parts):
+                layer_dir = parts[i + 1]
+                # Strip common prefixes like "dev-", "01-", etc.
+                if layer_dir.startswith("dev-"):
+                    return layer_dir[4:]  # Remove "dev-" prefix
+                elif layer_dir[0].isdigit() and "-" in layer_dir:
+                    # Handle numbered layers like "01-example-data"
+                    return layer_dir.split("-", 1)[1] if "-" in layer_dir else layer_dir
+                return layer_dir
+        return None
+
+    @staticmethod
+    def _merge_yaml_layers(
+        yaml_paths: list[str],
+        remapper: Optional[IDRemapper] = None,
+        patch_dirs: Optional[list[str]] = None
+    ) -> dict:
         """Merge YAML patch data from multiple layers.
 
         Records are merged in order — later layers override earlier ones
         on a per-field basis. _deleted lists are accumulated.
+
+        If remapper is provided and YAML has _meta.local_ids: true,
+        @entity_type:N syntax is remapped to real IDs.
         """
         merged_records: dict = {}
         deleted_set: set = set()
@@ -793,9 +855,30 @@ class WorldDB:
             if not data:
                 continue
 
+            # Check if this file uses local IDs
+            meta = data.get("_meta") or {}
+            uses_local_ids = meta.get("local_ids", False)
+            table_name = meta.get("table_name", "")
+
+            # Detect layer for remapping
+            layer_id = None
+            if uses_local_ids and remapper and patch_dirs:
+                layer_id = WorldDB._detect_layer_from_path(yaml_path, patch_dirs)
+
             for pk_key, fields in data.get("records", {}).items():
                 if not isinstance(fields, dict):
                     continue
+
+                # Remap IDs if local mode is active
+                if uses_local_ids and remapper and layer_id:
+                    try:
+                        fields, pk_key = remapper.remap_record(
+                            layer_id, table_name, fields, pk_key
+                        )
+                    except ValueError as e:
+                        print(f"  WARN: ID remap failed in {yaml_path}: {e}")
+                        continue
+
                 # Un-delete if a later layer re-adds a record
                 deleted_set.discard(pk_key)
                 if pk_key in merged_records:
@@ -804,6 +887,14 @@ class WorldDB:
                     merged_records[pk_key] = dict(fields)
 
             for del_key in data.get("_deleted", []):
+                # Remap deletion keys too
+                if uses_local_ids and remapper and layer_id:
+                    try:
+                        del_key = remapper.remap_pk(layer_id, del_key, table_name)
+                    except ValueError as e:
+                        print(f"  WARN: Delete key remap failed in {yaml_path}: {e}")
+                        continue
+
                 deleted_set.add(del_key)
                 merged_records.pop(del_key, None)
 
