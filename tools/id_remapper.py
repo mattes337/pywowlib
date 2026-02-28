@@ -22,7 +22,7 @@ import yaml
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from wdbx.id_remapper import IDRemapper, ENTITY_ALIASES, LOCAL_ID_PATTERN, Manifestation
+from wdbx.id_remapper import IDRemapper, ENTITY_ALIASES, LOCAL_ID_PATTERN, TEXT_ID_PATTERN, Manifestation
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 REGISTRY_PATH = PROJECT_ROOT / ".patch" / "id-registry.yaml"
@@ -606,6 +606,77 @@ def cmd_list_manifestations(args):
     return 0
 
 
+def cmd_remap_text(args):
+    """Remap @entity:N patterns in text files (Lua, conf, etc.)."""
+    layer_id = args.layer
+    quiet = args.quiet
+
+    try:
+        remapper = IDRemapper()
+    except FileNotFoundError:
+        print("Error: id-registry.yaml not found", file=sys.stderr)
+        return 1
+
+    if args.src_dir and args.dst_dir:
+        # Batch mode: process all files in directory
+        src = Path(args.src_dir)
+        dst = Path(args.dst_dir)
+
+        if not src.exists():
+            print(f"Error: source directory not found: {src}", file=sys.stderr)
+            return 1
+
+        count = 0
+        remapped_count = 0
+        for f in sorted(src.rglob("*")):
+            if not f.is_file():
+                continue
+            rel = f.relative_to(src)
+            out = dst / rel
+            out.parent.mkdir(parents=True, exist_ok=True)
+
+            try:
+                text = f.read_text(encoding="utf-8")
+                result = remapper.remap_text(layer_id, text)
+                out.write_text(result, encoding="utf-8")
+                if result != text:
+                    remapped_count += 1
+                count += 1
+            except UnicodeDecodeError:
+                # Binary file — copy as-is
+                import shutil
+                shutil.copy2(f, out)
+                count += 1
+
+        if not quiet:
+            print(
+                f"Processed {count} file(s) ({remapped_count} remapped) "
+                f"from {src} → {dst}",
+                file=sys.stderr,
+            )
+
+    elif args.file:
+        # Single file mode
+        text = Path(args.file).read_text(encoding="utf-8")
+        result = remapper.remap_text(layer_id, text)
+        if args.output:
+            Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.output).write_text(result, encoding="utf-8")
+        else:
+            sys.stdout.write(result)
+        if not quiet and result != text:
+            print(f"Remapped IDs in {args.file}", file=sys.stderr)
+
+    else:
+        # stdin/stdout mode
+        text = sys.stdin.read()
+        result = remapper.remap_text(layer_id, text)
+        # Force UTF-8 for stdout on Windows (cp1252 default can't handle all chars)
+        sys.stdout.buffer.write(result.encode("utf-8"))
+
+    return 0
+
+
 def cmd_ranges(args):
     """Show configured ID ranges."""
     try:
@@ -672,6 +743,19 @@ def main():
     # validate
     p_validate = subparsers.add_parser("validate", help="Validate local IDs")
     p_validate.set_defaults(func=cmd_validate)
+
+    # remap-text
+    p_remap = subparsers.add_parser(
+        "remap-text",
+        help="Remap @entity:N patterns in text files (Lua, conf, etc.)"
+    )
+    p_remap.add_argument("--layer", required=True, help="Layer ID for ID resolution")
+    p_remap.add_argument("--file", help="Single input file")
+    p_remap.add_argument("--output", help="Output file (default: stdout)")
+    p_remap.add_argument("--src-dir", help="Source directory for batch mode")
+    p_remap.add_argument("--dst-dir", help="Destination directory for batch mode")
+    p_remap.add_argument("--quiet", action="store_true", help="Suppress progress output")
+    p_remap.set_defaults(func=cmd_remap_text)
 
     # ranges
     p_ranges = subparsers.add_parser("ranges", help="Show configured ranges")

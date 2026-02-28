@@ -108,6 +108,11 @@ LOCAL_ID_PATTERN = re.compile(
 # Slug validation pattern (same as embedded in LOCAL_ID_PATTERN)
 SLUG_PATTERN = re.compile(r'^[a-z][a-z0-9_-]*$')
 
+# Regex for finding @entity:N patterns in arbitrary text (e.g., Lua, conf files).
+# Requires explicit entity type — @:N shorthand is NOT supported in text mode
+# (no table context to infer entity type).
+TEXT_ID_PATTERN = re.compile(r'@([a-zA-Z_]+):(\d+)(?::([a-z][a-z0-9_-]*))?')
+
 
 class IDRemapper:
     """
@@ -219,18 +224,19 @@ class IDRemapper:
         """
         return ENTITY_ALIASES.get(entity_type, entity_type)
 
-    def get_range(self, layer_id: str, entity_type: str) -> Optional[IDRange]:
+    def get_range(self, layer_id: str, entity_type: str, resolve_alias: bool = True) -> Optional[IDRange]:
         """
         Get the first available ID range for a layer/entity type.
 
         Args:
             layer_id: Layer identifier (e.g., "sensible-loot")
             entity_type: Entity type (e.g., "item_template")
+            resolve_alias: Whether to resolve entity aliases (False for @:N same-table refs)
 
         Returns:
             IDRange if found, None otherwise
         """
-        canonical_type = self.resolve_entity_type(entity_type)
+        canonical_type = self.resolve_entity_type(entity_type) if resolve_alias else entity_type
 
         layer_ranges = self.ranges.get(canonical_type, {}).get(layer_id, [])
         if layer_ranges:
@@ -238,7 +244,7 @@ class IDRemapper:
 
         return None
 
-    def get_real_id(self, layer_id: str, entity_type: str, local_id: int) -> int:
+    def get_real_id(self, layer_id: str, entity_type: str, local_id: int, resolve_alias: bool = True) -> int:
         """
         Convert a local ID to a real ID.
 
@@ -246,6 +252,7 @@ class IDRemapper:
             layer_id: Layer identifier
             entity_type: Entity type (canonical or alias)
             local_id: Local ID (1-indexed)
+            resolve_alias: Whether to resolve entity aliases (False for @:N same-table refs)
 
         Returns:
             Real ID
@@ -253,7 +260,7 @@ class IDRemapper:
         Raises:
             ValueError: If no range found or local_id exceeds range
         """
-        id_range = self.get_range(layer_id, entity_type)
+        id_range = self.get_range(layer_id, entity_type, resolve_alias=resolve_alias)
 
         if not id_range:
             raise ValueError(
@@ -335,24 +342,27 @@ class IDRemapper:
 
         entity_type, numeric_id, slug = parsed
 
-        # @:N or @:slug syntax uses default entity type
+        # @:N or @:slug syntax uses default entity type (raw table name, no alias)
+        # @entity:N uses explicit entity type (alias resolution applies)
+        use_alias = True
         if not entity_type:
             if not default_entity_type:
                 raise ValueError(
                     f"@:N syntax requires default_entity_type, got: {value}"
                 )
             entity_type = default_entity_type
+            use_alias = False  # @:N refs use raw table name for range lookup
 
-        # Resolve entity type alias
-        canonical_type = self.resolve_entity_type(entity_type)
+        # Resolve entity type alias (only for explicit cross-table references)
+        canonical_type = self.resolve_entity_type(entity_type) if use_alias else entity_type
         key = f"{layer_id}_{canonical_type}"
 
         if numeric_id is not None:
             # Explicit numeric ID - use it directly
-            real_id = self.get_real_id(layer_id, entity_type, numeric_id)
+            real_id = self.get_real_id(layer_id, entity_type, numeric_id, resolve_alias=use_alias)
         elif slug is not None:
             # Slug-only - look up or assign ID
-            real_id = self._resolve_slug(layer_id, entity_type, slug, yaml_path, field_path)
+            real_id = self._resolve_slug(layer_id, entity_type, slug, yaml_path, field_path, resolve_alias=use_alias)
         else:
             # Should not happen with valid regex
             return value
@@ -427,17 +437,19 @@ class IDRemapper:
 
             if parsed:
                 entity_type, numeric_id, slug = parsed
+                use_alias = True
                 if not entity_type:
                     entity_type = default_entity_type or ""
+                    use_alias = False  # @:N refs use raw table name
 
-                canonical_type = self.resolve_entity_type(entity_type)
+                canonical_type = self.resolve_entity_type(entity_type) if use_alias else entity_type
                 key = f"{layer_id}_{canonical_type}"
 
                 if numeric_id is not None:
-                    real_id = self.get_real_id(layer_id, entity_type, numeric_id)
+                    real_id = self.get_real_id(layer_id, entity_type, numeric_id, resolve_alias=use_alias)
                 elif slug is not None:
                     component_path = f"{field_path}[{i}]" if field_path else f"pk[{i}]"
-                    real_id = self._resolve_slug(layer_id, entity_type, slug, yaml_path, component_path)
+                    real_id = self._resolve_slug(layer_id, entity_type, slug, yaml_path, component_path, resolve_alias=use_alias)
                 else:
                     remapped.append(component)
                     continue
@@ -534,6 +546,35 @@ class IDRemapper:
                 result.append(item)
         return result
 
+    def remap_text(self, layer_id: str, text: str) -> str:
+        """
+        Replace all @entity_type:N patterns in arbitrary text with real IDs.
+
+        Unlike YAML remapping, this does NOT support @:N shorthand
+        (no table context in text files). Entity type must be explicit.
+
+        Patterns that can't be resolved (unknown layer/entity or out-of-range)
+        are left unchanged.
+
+        Args:
+            layer_id: Layer identifier (e.g., "profession-quests")
+            text: Input text containing @entity:N patterns
+
+        Returns:
+            Text with @entity:N patterns replaced by real ID numbers
+        """
+        def replacer(match):
+            entity_type = match.group(1)
+            local_id = int(match.group(2))
+            try:
+                real_id = self.get_real_id(layer_id, entity_type, local_id)
+                return str(real_id)
+            except ValueError:
+                # No range found or out of range — leave unchanged
+                return match.group(0)
+
+        return TEXT_ID_PATTERN.sub(replacer, text)
+
     def validate_local_id(
         self,
         layer_id: str,
@@ -598,9 +639,9 @@ class IDRemapper:
     # Manifestation System
     # =========================================================================
 
-    def _get_key(self, layer_id: str, entity_type: str) -> str:
+    def _get_key(self, layer_id: str, entity_type: str, resolve_alias: bool = True) -> str:
         """Get the storage key for a layer/entity combination."""
-        canonical = self.resolve_entity_type(entity_type)
+        canonical = self.resolve_entity_type(entity_type) if resolve_alias else entity_type
         return f"{layer_id}_{canonical}"
 
     def _resolve_slug(
@@ -609,7 +650,8 @@ class IDRemapper:
         entity_type: str,
         slug: str,
         yaml_path: Optional[str] = None,
-        field_path: Optional[str] = None
+        field_path: Optional[str] = None,
+        resolve_alias: bool = True
     ) -> int:
         """
         Resolve a slug to a real ID.
@@ -623,18 +665,19 @@ class IDRemapper:
             slug: Slug string
             yaml_path: Path to source file (for manifestation tracking)
             field_path: Field path in record (for manifestation tracking)
+            resolve_alias: Whether to resolve entity aliases (False for @:N same-table refs)
 
         Returns:
             Real ID for this slug
         """
-        key = self._get_key(layer_id, entity_type)
+        key = self._get_key(layer_id, entity_type, resolve_alias=resolve_alias)
 
         # Check if already resolved
         if key in self._slug_to_id and slug in self._slug_to_id[key]:
             return self._slug_to_id[key][slug]
 
         # Assign new ID
-        real_id = self._assign_next_id(layer_id, entity_type, slug)
+        real_id = self._assign_next_id(layer_id, entity_type, slug, resolve_alias=resolve_alias)
 
         # Track manifestation if we have source info
         if yaml_path and field_path:
@@ -649,7 +692,7 @@ class IDRemapper:
 
         return real_id
 
-    def _assign_next_id(self, layer_id: str, entity_type: str, slug: str) -> int:
+    def _assign_next_id(self, layer_id: str, entity_type: str, slug: str, resolve_alias: bool = True) -> int:
         """
         Assign the next available ID to a slug.
 
@@ -657,12 +700,13 @@ class IDRemapper:
             layer_id: Layer identifier
             entity_type: Entity type
             slug: Slug string
+            resolve_alias: Whether to resolve entity aliases (False for @:N same-table refs)
 
         Returns:
             Assigned real ID
         """
-        key = self._get_key(layer_id, entity_type)
-        id_range = self.get_range(layer_id, entity_type)
+        key = self._get_key(layer_id, entity_type, resolve_alias=resolve_alias)
+        id_range = self.get_range(layer_id, entity_type, resolve_alias=resolve_alias)
 
         if not id_range:
             raise ValueError(
